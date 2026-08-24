@@ -11,7 +11,7 @@ verwendet (Active-Learning-Loop).
 ```
 vertrags-ocr/
 ├── backend/      FastAPI-Server (Upload, DB, OCR-Inferenz, REST-API)
-├── frontend/     React + TypeScript (Vite) – Review-Oberfläche
+├── frontend/     TypeScript-Frontend ohne Vite/Esbuild – Review-Oberfläche
 ├── training/     Skripte zum Export der Trainingsdaten & Fine-Tuning von Donut
 └── docker-compose.yml
 ```
@@ -104,14 +104,18 @@ interaktive API-Doku: `/docs`).
 
 ## Setup: Frontend
 
+Das Frontend wurde von Vite/React-Tooling auf eine reine TypeScript-Frontend-Variante
+umgestellt, die ohne esbuild/Rollup-Binärdateien läuft. Es wird mit `tsc` in
+`dist/` transpiliert und anschließend über einen kleinen Node-HTTP-Server ausgeliefert.
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Frontend läuft unter http://localhost:5173 und spricht über den Vite-Proxy mit
-dem Backend auf Port 8000.
+Frontend läuft unter http://localhost:5173 und spricht direkt mit dem Backend auf
+Port 8000 (ohne Vite-Proxy).
 
 ### Fundstellen im Dokument (Sprung zur Position + Rahmen)
 

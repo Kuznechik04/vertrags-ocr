@@ -1,9 +1,7 @@
 import * as pdfjsLib from "pdfjs-dist";
-// Vite-spezifischer Import: liefert die URL der gebündelten Worker-Datei,
-// damit pdf.js seine Rendering-Arbeit in einem Web Worker statt im UI-Thread
-// erledigen kann.
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
+// Ohne Vite/Esbuild werden Worker-Dateien über einen statischen Pfad aus
+// node_modules direkt vom HTTP-Server ausgeliefert.
+pdfjsLib.GlobalWorkerOptions.workerSrc = "/node_modules/pdfjs-dist/build/pdf.worker.min.mjs";
 
 export { pdfjsLib };

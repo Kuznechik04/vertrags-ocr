@@ -6,7 +6,6 @@ import RegisterPage from "./components/RegisterPage";
 import TemplateAdminPage from "./components/TemplateAdminPage";
 import RequireAuth from "./auth/RequireAuth";
 import { useAuth } from "./auth/AuthContext";
-import "./App.css";
 
 export default function App() {
   const { user, logout } = useAuth();
