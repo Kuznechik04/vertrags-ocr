@@ -2,19 +2,20 @@
 
 Konzeptionsphase, vor Test und Rollout. Reihenfolge = Priorität.
 
-## 1. Feldkatalog/Vertragstypen-Scope — 🔨 in Arbeit
+## 1. Feldkatalog/Vertragstypen-Scope — ✅ größtenteils umgesetzt
 
 `CONTRACT_FIELDS` (9 Felder in `backend/app/ocr/base.py`) war bisher fest auf
 Versicherungsverträge zugeschnitten. Entscheidung: bestehendes Feldset bleibt
 als "Versicherung"-Template erhalten, zusätzlich ein erweiterbares
-"generisch"-Template für weitere Vertragstypen. Neue Felder müssen sich ohne
-Codeänderung anlegen und nutzen lassen (siehe
-`.claude/plans/private-projects-vertrags-ocr-training-velvety-dusk.md` für
-die volle Architektur).
+"generisch"-Template für weitere Vertragstypen.
 
-Zurückgestellte Folgepunkte:
-- [ ] Frontend: Vertragstyp-Auswahl beim Upload (Dropdown aus `GET /api/templates`)
-- [ ] Admin-UI zum Anlegen neuer Vertragstypen/Felder (aktuell nur über `/docs`)
+Umgesetzt:
+- [x] Frontend: Vertragstyp-Auswahl beim Upload (Dropdown aus `GET /api/templates`,
+      `frontend/src/components/DocumentListPage.tsx`)
+- [x] Admin-UI zum Anlegen neuer Vertragstypen/Felder
+      (`frontend/src/components/TemplateAdminPage.tsx`, Route `/admin/templates`)
+
+Offen:
 - [ ] Optional: `template_key` ins Trainings-Manifest aufnehmen, falls später pro Vertragstyp getrennte Modelle trainiert werden sollen
 
 ## 2. Bounding-Box-Strategie für Donut

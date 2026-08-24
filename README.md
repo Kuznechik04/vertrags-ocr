@@ -11,7 +11,7 @@ verwendet (Active-Learning-Loop).
 ```
 vertrags-ocr/
 ├── backend/      FastAPI-Server (Upload, DB, OCR-Inferenz, REST-API)
-├── frontend/     TypeScript-Frontend ohne Vite/Esbuild – Review-Oberfläche
+├── frontend/     TypeScript-Frontend ohne Vite/App-Bundler – Review-Oberfläche
 ├── training/     Skripte zum Export der Trainingsdaten & Fine-Tuning von Donut
 └── docker-compose.yml
 ```
@@ -79,10 +79,6 @@ Die App unterstützt mehrere Nutzerkonten mit E-Mail/Passwort-Login (JWT-Token):
   sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils
   ```
 
-Dieses Projekt wurde in einer Sandbox ohne Zugriff auf npm-/PyPI-Registries
-erstellt; die Python- und Node-Abhängigkeiten sind daher **noch nicht installiert**.
-Bitte einmalig lokal nachholen (siehe unten).
-
 ## Setup: Backend
 
 ```bash
@@ -104,9 +100,20 @@ interaktive API-Doku: `/docs`).
 
 ## Setup: Frontend
 
-Das Frontend wurde von Vite/React-Tooling auf eine reine TypeScript-Frontend-Variante
-umgestellt, die ohne esbuild/Rollup-Binärdateien läuft. Es wird mit `tsc` in
-`dist/` transpiliert und anschließend über einen kleinen Node-HTTP-Server ausgeliefert.
+Das Frontend ist reines TypeScript + DOM-APIs – **kein React, kein Vite, kein
+Bundler, kein esbuild**. Es gibt bewusst kein UI-Framework: Seiten/Komponenten
+sind handgeschriebene Funktionen, die mit einem winzigen JSX-losen DOM-Helper
+(`h()` in `src/lib/dom.ts`) echte DOM-Knoten bauen, ein selbstgeschriebener
+History-API-Router (`src/lib/router.ts`) übernimmt das Routing, ein
+Pub-Sub-Store (`src/auth/authStore.ts`) den Login-Status. `tsc` ist der
+**einzige** Build-Schritt (transpiliert `src/**` nach `dist/`, reine
+JS-Kompilierung, keine Binärabhängigkeiten); danach kopiert `scripts/build.mjs`
+`index.html`/CSS nach `dist/` und trägt die Backend-URL ein; ausgeliefert wird
+alles über einen kleinen Node-HTTP-Server (`scripts/dev-server.mjs`).
+`pdfjs-dist` (liefert bereits echtes ESM) ist die einzige Laufzeit-Abhängigkeit
+und wird direkt aus `node_modules` per
+[Importmap](https://developer.mozilla.org/de/docs/Web/HTML/Element/script/type/importmap)
+in `index.html` referenziert.
 
 ```bash
 cd frontend
@@ -115,7 +122,19 @@ npm run dev
 ```
 
 Frontend läuft unter http://localhost:5173 und spricht direkt mit dem Backend auf
-Port 8000 (ohne Vite-Proxy).
+Port 8000 (ohne Proxy). Die Backend-URL steht in `window.__APP_CONFIG__` in
+`index.html` und wird beim Build von `scripts/build.mjs` gesetzt (Default
+`http://localhost:8000`, überschreibbar per `API_BASE_URL=... npm run build`).
+
+> **Wichtig für native ES-Module ohne Bundler:** Da der Browser den kompilierten
+> App-Code direkt lädt (kein Bundler, der Pfade auflöst), müssen relative
+> Imports in `src/**` die **`.js`-Endung** tragen, z.B. `import { api } from
+> "../api/client.js"` – auch wenn die Quelldatei `client.ts` heißt.
+> `tsconfig.json` nutzt dafür `"module"`/`"moduleResolution": "NodeNext"`, was
+> solche Imports erzwingt und unverändert nach `dist/` durchreicht. Fehlt die
+> Endung, kompiliert `tsc` zwar fehlerfrei, aber der Browser findet das Modul
+> im Dev-Server nicht (Fallback auf `index.html`, "Failed to load module
+> script") – die Seite bleibt dann leer.
 
 ### Fundstellen im Dokument (Sprung zur Position + Rahmen)
 
@@ -141,6 +160,14 @@ und das Overlay programmatisch steuern. `pdfjs-dist` ist bereits in
 ```bash
 docker compose up --build
 ```
+
+Der Frontend-Container baut mit `npm run build` und liefert `dist/` anschließend
+über denselben `scripts/dev-server.mjs` aus wie im lokalen Dev-Betrieb (statt
+eines generischen Static-File-Servers) – nur so werden sowohl die `/node_modules/*`-
+Importmap-Pfade als auch die kompilierten Module korrekt aufgelöst. Die
+Backend-URL fürs Frontend wird beim Image-Build per Build-Arg `API_BASE_URL`
+gesetzt (Default in `docker-compose.yml`: `http://localhost:8000`, passend zum
+Port-Mapping des `backend`-Service).
 
 ## Training eines eigenen Modells
 

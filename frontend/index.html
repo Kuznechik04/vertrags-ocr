@@ -10,6 +10,8 @@
   <body>
     <div id="root"></div>
     <script>
+      // apiBaseUrl wird von scripts/build.mjs beim Build ersetzt (Default:
+      // http://localhost:8000, überschreibbar per API_BASE_URL-Env-Var).
       window.__APP_CONFIG__ = {
         apiBaseUrl: "",
       };
@@ -17,10 +19,7 @@
     <script type="importmap">
       {
         "imports": {
-          "react": "/node_modules/react/index.js",
-          "react-dom/client": "/node_modules/react-dom/client.js",
-          "react-router-dom": "/node_modules/react-router-dom/dist/index.js",
-          "react/jsx-runtime": "/node_modules/react/jsx-runtime.js"
+          "pdfjs-dist": "/node_modules/pdfjs-dist/build/pdf.mjs"
         }
       }
     </script>

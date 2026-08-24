@@ -1,6 +1,6 @@
-import type { ContractTemplate, DocumentDetail, DocumentSummary } from "../types/document";
-import type { AuthResponse, CurrentUser } from "../types/auth";
-import { getToken, setToken } from "./tokenStore";
+import type { ContractTemplate, DocumentDetail, DocumentSummary } from "../types/document.js";
+import type { AuthResponse, CurrentUser } from "../types/auth.js";
+import { getToken, setToken } from "./tokenStore.js";
 
 // Basis-URL für das Backend; in der HTML-Datei kann sie per window.__APP_CONFIG__
 // gesetzt werden. So wird kein Vite-Env-Setup mehr benötigt.
