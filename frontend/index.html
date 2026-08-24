@@ -4,9 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Vertrags-OCR Review</title>
+    <link rel="stylesheet" href="/dist/index.css" />
+    <link rel="stylesheet" href="/dist/App.css" />
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      window.__APP_CONFIG__ = {
+        apiBaseUrl: "",
+      };
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "/node_modules/react/index.js",
+          "react-dom/client": "/node_modules/react-dom/client.js",
+          "react-router-dom": "/node_modules/react-router-dom/dist/index.js",
+          "react/jsx-runtime": "/node_modules/react/jsx-runtime.js"
+        }
+      }
+    </script>
+    <script type="module" src="/dist/main.js"></script>
   </body>
 </html>

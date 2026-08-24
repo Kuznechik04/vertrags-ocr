@@ -2,9 +2,9 @@ import type { ContractTemplate, DocumentDetail, DocumentSummary } from "../types
 import type { AuthResponse, CurrentUser } from "../types/auth";
 import { getToken, setToken } from "./tokenStore";
 
-// In Dev läuft Vite's Proxy (siehe vite.config.ts), in Produktion kann hier
-// die echte Backend-URL via Umgebungsvariable gesetzt werden.
-const BASE_URL = import.meta.env.VITE_API_URL ?? "";
+// Basis-URL für das Backend; in der HTML-Datei kann sie per window.__APP_CONFIG__
+// gesetzt werden. So wird kein Vite-Env-Setup mehr benötigt.
+const BASE_URL = window.__APP_CONFIG__?.apiBaseUrl ?? "";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getToken();
