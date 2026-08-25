@@ -11,21 +11,36 @@ Text-Extraktion in zwei Stufen (jeweils inkl. Wort-Bounding-Boxes, damit die
 Fundstelle im Frontend markiert werden kann):
 1. `pdfplumber` liest die eingebettete Textebene eines PDFs (schnell, exakt,
    funktioniert aber nur, wenn das PDF "echten" Text enthält statt nur Bildern).
+   Reines Python, kein natives Programm nötig.
 2. Liefert Stufe 1 nichts oder nur sehr wenig Text (z.B. weil es sich um ein
    gescanntes Dokument oder ein hochgeladenes Bild handelt), wird als Fallback
-   Tesseract-OCR (`pytesseract`) auf die gerenderten Seiten angewendet.
+   OCR auf die gerenderten Seiten angewendet. PDF-Seiten werden dafür über
+   `PyMuPDF` (`fitz`) zu Bildern gerendert – ein reiner pip-Wheel mit
+   eingebautem MuPDF, kein externes Programm nötig (anders als das früher
+   genutzte `pdf2image`, das Poppler brauchte).
 
-Für Tesseract muss das `tesseract`-Kommandozeilenprogramm lokal installiert
-sein (macOS: `brew install tesseract tesseract-lang`, Ubuntu/Debian:
-`apt install tesseract-ocr tesseract-ocr-deu`). Ist es nicht installiert,
-wird Stufe 2 übersprungen und die Extraktion liefert ggf. leeren Text.
+Welche OCR-Engine für Stufe 2 läuft, ist über `settings.mock_ocr_engine`
+konfigurierbar (`.env`, Variable `MOCK_OCR_ENGINE`):
+- `"easyocr"` (Standard): reines `pip install`, Modellgewichte werden beim
+  ersten Lauf automatisch heruntergeladen, kein Installer/Admin-Recht nötig.
+  Unterstützt Deutsch (inkl. Umlaute) und Englisch gemeinsam.
+- `"tesseract"`: braucht das `tesseract`-Kommandozeilenprogramm lokal
+  installiert (macOS: `brew install tesseract tesseract-lang`, Ubuntu/Debian:
+  `apt install tesseract-ocr tesseract-ocr-deu`). Ist es nicht installiert,
+  wird Stufe 2 übersprungen und die Extraktion liefert ggf. leeren Text.
+  Teils präziser bei sehr dichtem/tabellarischem Text als EasyOCR.
+
+Beide Engines liefern dieselben `Word`/`PageData`-Strukturen (Bounding-Boxen
+auf 0..1 normiert, Konfidenz auf 0..100 skaliert), sodass das nachgelagerte
+Regex-Matching (`_match_field_in_pages`) unabhängig von der gewählten Engine
+identisch funktioniert.
 
 Zur Konfidenz: Da dieses Backend nur Regex-Muster statt eines echten Modells
 nutzt, gibt es keine "richtige" Wahrscheinlichkeit – ein trainiertes Modell
 mit kalibrierten Wahrscheinlichkeiten liefert erst `DonutOCRModel`
 (siehe `DonutOCRModel._sequence_confidence`, dort aus den Generation-Scores
 berechnet). Die hier ausgegebene Konfidenz ist die durchschnittliche
-Tesseract-Worterkennungssicherheit (0–100, von Tesseract selbst pro Wort
+OCR-Worterkennungssicherheit (0–100, von der jeweiligen Engine pro Wort
 geliefert) der Wörter, die zum gefundenen Feldwert gehören – siehe
 `_average_word_confidence`. Stammt der Treffer aus der eingebetteten
 PDF-Textebene (pdfplumber) statt aus OCR, gibt es keine Erkennungsunsicherheit
@@ -42,6 +57,7 @@ from dataclasses import dataclass
 
 import pdfplumber
 
+from app.core.config import settings
 from app.ocr.base import BaseOCRModel, FieldPrediction, FieldSpec
 
 logger = logging.getLogger(__name__)
@@ -50,6 +66,22 @@ logger = logging.getLogger(__name__)
 # zusätzlich auf OCR auszuweichen (kurze Fragmente deuten auf ein Scan-PDF hin,
 # bei dem pdfplumber nur vereinzelte Artefakte statt echten Text findet).
 MIN_TRUSTED_TEXT_LENGTH = 40
+
+
+_easyocr_reader = None
+
+
+def _get_easyocr_reader():
+    """Lädt den EasyOCR-Reader (inkl. Modellgewichten) genau einmal pro
+    Prozess – die Initialisierung ist teuer (mehrere Sekunden), sollte also
+    nicht pro Upload neu passieren. `gpu=False`, damit es ohne CUDA-Setup
+    überall gleich funktioniert; für Produktivbetrieb mit GPU ggf. anpassen."""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        import easyocr
+
+        _easyocr_reader = easyocr.Reader(["de", "en"], gpu=False)
+    return _easyocr_reader
 
 
 def _average_word_confidence(words: list["Word"]) -> float:
@@ -184,6 +216,82 @@ class MockOCRModel(BaseOCRModel):
 
     def _extract_pages_via_ocr(self, file_path: str, is_pdf: bool) -> list[PageData]:
         try:
+            images = self._load_images(file_path, is_pdf)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Konnte Dokument nicht als Bild laden für OCR (%s): %s", file_path, exc)
+            return []
+
+        engine = (settings.mock_ocr_engine or "easyocr").lower()
+        if engine == "tesseract":
+            return self._ocr_pages_with_tesseract(images)
+        return self._ocr_pages_with_easyocr(images)
+
+    def _load_images(self, file_path: str, is_pdf: bool) -> list:
+        from PIL import Image
+
+        if is_pdf:
+            import fitz  # PyMuPDF
+
+            dpi = 300
+            zoom = dpi / 72  # PyMuPDFs Basisauflösung ist 72 DPI
+            matrix = fitz.Matrix(zoom, zoom)
+            with fitz.open(file_path) as doc:
+                return [
+                    Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    for pix in (page.get_pixmap(matrix=matrix) for page in doc)
+                ]
+        return [Image.open(file_path).convert("RGB")]
+
+    def _ocr_pages_with_easyocr(self, images: list) -> list[PageData]:
+        try:
+            reader = _get_easyocr_reader()
+        except ImportError:
+            logger.warning(
+                "easyocr ist nicht installiert – OCR-Fallback für gescannte Dokumente/"
+                "Bilder wird übersprungen. `pip install easyocr` installieren."
+            )
+            return []
+
+        import numpy as np
+
+        pages: list[PageData] = []
+        for image in images:
+            width, height = image.size
+            try:
+                detections = reader.readtext(np.array(image), detail=1, paragraph=False)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("EasyOCR-Fallback fehlgeschlagen: %s", exc)
+                pages.append(PageData(lines=[]))
+                continue
+
+            # EasyOCR liefert keine Block/Absatz/Zeilen-Nummern wie Tesseract,
+            # daher hier dieselbe Zeilen-Heuristik wie beim pdfplumber-Pfad
+            # (siehe _group_words_into_lines).
+            words: list[Word] = []
+            for bbox_points, text, confidence in detections:
+                text = text.strip()
+                if not text:
+                    continue
+                xs = [p[0] for p in bbox_points]
+                ys = [p[1] for p in bbox_points]
+                words.append(
+                    Word(
+                        text=text,
+                        x0=min(xs) / width,
+                        x1=max(xs) / width,
+                        top=min(ys) / height,
+                        bottom=max(ys) / height,
+                        # EasyOCR liefert 0..1, hier auf die gemeinsame 0..100-Skala
+                        # gebracht (wie Tesseracts conf), damit
+                        # _average_word_confidence unverändert bleiben kann.
+                        ocr_confidence=max(0.0, min(1.0, confidence)) * 100,
+                    )
+                )
+            pages.append(PageData(lines=self._group_words_into_lines(words)))
+        return pages
+
+    def _ocr_pages_with_tesseract(self, images: list) -> list[PageData]:
+        try:
             import pytesseract
             from pytesseract import Output
         except ImportError:
@@ -194,19 +302,13 @@ class MockOCRModel(BaseOCRModel):
             )
             return []
 
-        try:
-            images = self._load_images(file_path, is_pdf)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Konnte Dokument nicht als Bild laden für OCR (%s): %s", file_path, exc)
-            return []
-
         pages: list[PageData] = []
         for image in images:
             try:
                 data = pytesseract.image_to_data(image, lang="deu+eng", output_type=Output.DICT)
             except Exception as exc:  # noqa: BLE001
                 # z.B. tesseract-Binary nicht gefunden (TesseractNotFoundError)
-                logger.warning("OCR-Fallback fehlgeschlagen für %s: %s", file_path, exc)
+                logger.warning("OCR-Fallback fehlgeschlagen: %s", exc)
                 pages.append(PageData(lines=[]))
                 continue
 
@@ -253,15 +355,6 @@ class MockOCRModel(BaseOCRModel):
                 lines.append(current_line)
             pages.append(PageData(lines=lines))
         return pages
-
-    def _load_images(self, file_path: str, is_pdf: bool) -> list:
-        from PIL import Image
-
-        if is_pdf:
-            from pdf2image import convert_from_path
-
-            return [p.convert("RGB") for p in convert_from_path(file_path, dpi=300)]
-        return [Image.open(file_path).convert("RGB")]
 
     # ------------------------------------------------------------------
     # Feld-Matching über die extrahierten Wörter

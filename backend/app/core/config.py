@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     ocr_backend: str = "mock"
     model_path: str = "./training/output/contract-donut"
 
+    # Nur relevant für ocr_backend="mock": welche OCR-Engine für gescannte
+    # PDFs/Bild-Uploads genutzt wird (die eingebettete PDF-Textebene läuft
+    # davon unabhängig immer über pdfplumber).
+    # "easyocr"   -> Standard, reines pip-Paket, kein natives Programm nötig.
+    # "tesseract" -> braucht lokal installiertes tesseract-Kommandozeilen-
+    #                programm (siehe README), dafür teils präziser bei sehr
+    #                dichtem/tabellarischem Text.
+    mock_ocr_engine: str = "easyocr"
+
     # CORS
     frontend_origin: str = "http://localhost:5173"
 

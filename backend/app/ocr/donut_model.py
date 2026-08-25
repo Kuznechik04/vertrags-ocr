@@ -33,9 +33,10 @@ class DonutOCRModel(BaseOCRModel):
 
     def page_count(self, file_path: str) -> int:
         if file_path.lower().endswith(".pdf"):
-            from pdf2image import convert_from_path
+            import fitz  # PyMuPDF
 
-            return len(convert_from_path(file_path))
+            with fitz.open(file_path) as doc:
+                return doc.page_count
         return 1
 
     def predict(self, file_path: str, fields: list[FieldSpec]) -> list[FieldPrediction]:
@@ -101,8 +102,12 @@ class DonutOCRModel(BaseOCRModel):
         from PIL import Image
 
         if file_path.lower().endswith(".pdf"):
-            from pdf2image import convert_from_path
+            import fitz  # PyMuPDF
 
-            pages = convert_from_path(file_path, dpi=200)
-            return pages[0].convert("RGB")
+            dpi = 200
+            zoom = dpi / 72  # PyMuPDFs Basisauflösung ist 72 DPI
+            matrix = fitz.Matrix(zoom, zoom)
+            with fitz.open(file_path) as doc:
+                pix = doc[0].get_pixmap(matrix=matrix)
+                return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         return Image.open(file_path).convert("RGB")

@@ -67,16 +67,27 @@ Die App unterstützt mehrere Nutzerkonten mit E-Mail/Passwort-Login (JWT-Token):
 - Python 3.11+
 - Node.js 20+
 - Für das Fine-Tuning idealerweise eine GPU (CPU-Training ist möglich, aber langsam)
-- Für das Mock-Backend bei gescannten PDFs/Bild-Uploads: `tesseract` + `poppler`
-  als Systempakete (siehe unten) – ohne diese liefert das Mock-Backend bei
-  Scans/Bildern keinen Text und somit "kein Wert erkannt".
+- Für das Mock-Backend bei gescannten PDFs/Bild-Uploads: Standardmäßig läuft
+  OCR über **EasyOCR** (`MOCK_OCR_ENGINE=easyocr` in `backend/.env`, siehe
+  `.env.example`) – ein reines `pip`-Paket, es ist **kein** zusätzliches
+  Systemprogramm nötig, `pip install -r requirements.txt` reicht. Beim ersten
+  OCR-Lauf lädt EasyOCR seine Modellgewichte (`craft_mlt_25k.pth`,
+  `latin_g2.pth`) automatisch aus dem Internet herunter (paar hundert MB,
+  danach lokal zwischengespeichert unter `~/.EasyOCR/`).
+  PDF-Seiten werden dafür über `PyMuPDF` (ebenfalls reines `pip`-Paket) zu
+  Bildern gerendert – auch hier kein Systemprogramm nötig.
+
+  Alternativ kann per `MOCK_OCR_ENGINE=tesseract` auf **Tesseract**
+  umgeschaltet werden (teils präziser bei sehr dichtem/tabellarischem Text),
+  das braucht dann aber das `tesseract`-Kommandozeilenprogramm als
+  Systempaket:
 
   ```bash
   # macOS
-  brew install tesseract tesseract-lang poppler
+  brew install tesseract tesseract-lang
 
   # Ubuntu/Debian
-  sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils
+  sudo apt install tesseract-ocr tesseract-ocr-deu
   ```
 
 ## Setup: Backend
