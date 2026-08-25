@@ -26,11 +26,14 @@ class Settings(BaseSettings):
     # Nur relevant für ocr_backend="mock": welche OCR-Engine für gescannte
     # PDFs/Bild-Uploads genutzt wird (die eingebettete PDF-Textebene läuft
     # davon unabhängig immer über pdfplumber).
-    # "easyocr"   -> Standard, reines pip-Paket, kein natives Programm nötig.
+    # "doctr"     -> Standard, reines pip-Paket, kein natives Programm nötig.
+    #                Beste Genauigkeit bei gedrucktem Text der drei Optionen,
+    #                unterstützt Deutsch (inkl. Umlaute) direkt.
+    # "easyocr"   -> ebenfalls reines pip-Paket, aber schwächer bei dichtem/
+    #                klarem gedrucktem Fließtext als docTR.
     # "tesseract" -> braucht lokal installiertes tesseract-Kommandozeilen-
-    #                programm (siehe README), dafür teils präziser bei sehr
-    #                dichtem/tabellarischem Text.
-    mock_ocr_engine: str = "easyocr"
+    #                programm (siehe README).
+    mock_ocr_engine: str = "doctr"
 
     # CORS
     frontend_origin: str = "http://localhost:5173"

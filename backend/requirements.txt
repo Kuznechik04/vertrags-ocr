@@ -13,10 +13,14 @@ Pillow==10.4.0
 python-dotenv==1.0.1
 pytesseract==0.3.13
 easyocr==1.7.2
+python-doctr[torch]==1.1.0
 openpyxl==3.1.5
 
-# ML / Fine-Tuning (nur benötigt, wenn ein echtes Modell trainiert/geladen wird)
+# torch wird jetzt auch für den Mock-Backend-Standard (docTR/EasyOCR) benötigt,
+# nicht mehr nur fürs Donut-Fine-Tuning.
 torch==2.4.1
+
+# ML / Fine-Tuning (nur benötigt, wenn ein echtes Modell trainiert/geladen wird)
 transformers==4.44.2
 datasets==2.21.0
 accelerate==0.34.2

@@ -84,6 +84,45 @@ def _get_easyocr_reader():
     return _easyocr_reader
 
 
+_doctr_predictor = None
+
+
+def _get_doctr_predictor():
+    """Lädt den docTR-Predictor (inkl. Modellgewichten) genau einmal pro
+    Prozess – wie bei EasyOCR ist die Initialisierung teuer."""
+    global _doctr_predictor
+    if _doctr_predictor is None:
+        from doctr.models import ocr_predictor
+
+        _doctr_predictor = ocr_predictor(pretrained=True)
+    return _doctr_predictor
+
+
+def _preprocess_image_for_ocr(image):
+    """Leichte, engine-unabhängige Bildaufbereitung vor der OCR – hilft
+    besonders bei unscharfen/kontrastarmen Scans und rohen Bild-Uploads
+    (JPG/PNG), bei denen (anders als bei PDFs) keine DPI-Einstellung
+    greift. Nutzt ausschließlich Pillow, keine zusätzliche
+    Bildverarbeitungs-Bibliothek."""
+    from PIL import Image, ImageFilter, ImageOps
+
+    # Kleine Bilder hochskalieren – der einzige verfügbare "Auflösungs-
+    # Hebel" bei rohen Bild-Uploads. Deckelt auf max. Faktor 3, um
+    # Speicher/Rechenzeit bei winzigen Bildern nicht explodieren zu lassen.
+    short_side = min(image.size)
+    if short_side < 1500:
+        scale = min(2000 / short_side, 3.0)
+        image = image.resize(
+            (round(image.width * scale), round(image.height * scale)),
+            resample=Image.Resampling.LANCZOS,
+        )
+
+    gray = image.convert("L")
+    gray = ImageOps.autocontrast(gray, cutoff=1)
+    gray = gray.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+    return gray.convert("RGB")
+
+
 def _average_word_confidence(words: list["Word"]) -> float:
     """Mittelt die Tesseract-Wortkonfidenz (0..100) der an einem Treffer
     beteiligten Wörter und normiert sie auf 0..1. Wörter ohne OCR-Konfidenz
@@ -245,10 +284,12 @@ class MockOCRModel(BaseOCRModel):
             logger.warning("Konnte Dokument nicht als Bild laden für OCR (%s): %s", file_path, exc)
             return []
 
-        engine = (settings.mock_ocr_engine or "easyocr").lower()
+        engine = (settings.mock_ocr_engine or "doctr").lower()
         if engine == "tesseract":
             return self._ocr_pages_with_tesseract(images)
-        return self._ocr_pages_with_easyocr(images)
+        if engine == "easyocr":
+            return self._ocr_pages_with_easyocr(images)
+        return self._ocr_pages_with_doctr(images)
 
     def _load_images(self, file_path: str, is_pdf: bool) -> list:
         from PIL import Image
@@ -266,11 +307,13 @@ class MockOCRModel(BaseOCRModel):
             zoom = dpi / 72  # PyMuPDFs Basisauflösung ist 72 DPI
             matrix = fitz.Matrix(zoom, zoom)
             with fitz.open(file_path) as doc:
-                return [
+                images = [
                     Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                     for pix in (page.get_pixmap(matrix=matrix) for page in doc)
                 ]
-        return [Image.open(file_path).convert("RGB")]
+        else:
+            images = [Image.open(file_path).convert("RGB")]
+        return [_preprocess_image_for_ocr(image) for image in images]
 
     def _ocr_pages_with_easyocr(self, images: list) -> list[PageData]:
         try:
@@ -318,6 +361,52 @@ class MockOCRModel(BaseOCRModel):
                     )
                 )
             pages.append(PageData(lines=self._group_words_into_lines(words)))
+        return pages
+
+    def _ocr_pages_with_doctr(self, images: list) -> list[PageData]:
+        try:
+            predictor = _get_doctr_predictor()
+        except ImportError:
+            logger.warning(
+                "python-doctr ist nicht installiert – OCR-Fallback für gescannte "
+                "Dokumente/Bilder wird übersprungen. `pip install \"python-doctr[torch]\"` "
+                "installieren."
+            )
+            return []
+
+        import numpy as np
+
+        try:
+            result = predictor([np.array(image) for image in images])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("docTR-Fallback fehlgeschlagen: %s", exc)
+            return [PageData(lines=[]) for _ in images]
+
+        pages: list[PageData] = []
+        for page in result.pages:
+            # docTR liefert Wörter bereits nach Block/Zeile gruppiert (im
+            # Gegensatz zu EasyOCR) – keine eigene Zeilen-Heuristik nötig.
+            # `geometry` ist bei nicht-rotierten Boxen bereits
+            # ((xmin, ymin), (xmax, ymax)) in relativen 0..1-Koordinaten,
+            # identisch zur hier genutzten Konvention.
+            lines: list[list[Word]] = []
+            for block in page.blocks:
+                for line in block.lines:
+                    words = [
+                        Word(
+                            text=word.value.strip(),
+                            x0=word.geometry[0][0],
+                            top=word.geometry[0][1],
+                            x1=word.geometry[1][0],
+                            bottom=word.geometry[1][1],
+                            ocr_confidence=max(0.0, min(1.0, word.confidence)) * 100,
+                        )
+                        for word in line.words
+                        if word.value.strip()
+                    ]
+                    if words:
+                        lines.append(words)
+            pages.append(PageData(lines=lines))
         return pages
 
     def _ocr_pages_with_tesseract(self, images: list) -> list[PageData]:
