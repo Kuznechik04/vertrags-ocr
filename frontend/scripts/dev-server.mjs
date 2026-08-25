@@ -30,11 +30,22 @@ function resolveFile(requestPath) {
     return path.join(serveRoot, "index.html");
   }
 
-  const candidate = path.normalize(normalized).replace(/^\/+/, "");
-  const projectPath = path.resolve(rootDir, candidate);
-  const distPath = path.resolve(serveRoot, candidate);
+  // URL-Pfade sind immer POSIX-Style (Forward-Slashes), unabhängig vom
+  // Betriebssystem des Servers. Deshalb hier explizit mit path.posix
+  // normalisieren (schützt zusätzlich vor "../"-Traversal) und erst danach
+  // je Segment mit path.join zu einem echten Dateisystempfad zusammensetzen.
+  // path.normalize() allein würde unter Windows Backslashes erzeugen, wonach
+  // das führende Zeichen kein "/" mehr ist und candidate.replace(/^\/+/, "")
+  // ins Leere liefe – der Pfad würde dann fälschlich als Windows-Laufwerks-
+  // wurzel ("\dist\main.js" -> Laufwerkswurzel) statt relativ zu rootDir/
+  // serveRoot aufgelöst, die Datei nicht gefunden, und der Server würde auf
+  // sein SPA-Fallback (index.html mit falschem Content-Type) zurückfallen.
+  const segments = path.posix.normalize(normalized).replace(/^\/+/, "").split("/").filter(Boolean);
+  const candidateRel = path.join(...segments);
+  const projectPath = path.join(rootDir, candidateRel);
+  const distPath = path.join(serveRoot, candidateRel);
 
-  if (projectPath.startsWith(path.resolve(rootDir, "node_modules")) && existsSync(projectPath)) {
+  if (projectPath.startsWith(path.join(rootDir, "node_modules")) && existsSync(projectPath)) {
     return projectPath;
   }
 
