@@ -65,6 +65,10 @@ class ContractField(Base):
     corrected_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
 
+    # Warum `predicted_value` fehlt (falls es fehlt) – siehe app.ocr.base.MatchStatus:
+    # "matched" | "field_not_found" | "data_not_found" | "no_pattern".
+    match_status: Mapped[str] = mapped_column(String, nullable=False, default="matched")
+
     # Position im Dokument, um die Fundstelle im Viewer hervorzuheben
     page: Mapped[int] = mapped_column(Integer, default=1)
     bbox_x: Mapped[float | None] = mapped_column(Float, nullable=True)

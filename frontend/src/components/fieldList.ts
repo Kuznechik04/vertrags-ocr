@@ -1,5 +1,11 @@
 import { cls, h } from "../lib/dom.js";
-import type { ContractField } from "../types/document.js";
+import type { ContractField, FieldMatchStatus } from "../types/document.js";
+
+const STATUS_MESSAGES: Partial<Record<FieldMatchStatus, string>> = {
+  field_not_found: "Feld nicht im Dokument gefunden",
+  data_not_found: "Feld gefunden, aber kein Wert erkannt",
+  no_pattern: "Keine automatische Erkennung für dieses Feld",
+};
 
 export interface FieldListHandlers {
   onSelect: (id: string) => void;
@@ -115,9 +121,14 @@ function createFieldRow(initialField: ContractField, handlers: FieldListHandlers
     currentIsDrawing = isDrawing;
     row.className = cls("field-row", isActive && "active", field.is_validated && "validated", isDrawing && "drawing");
     labelEl.textContent = field.field_label;
-    const confidenceLevel = field.confidence >= 0.8 ? "high" : field.confidence >= 0.4 ? "medium" : "low";
-    confidenceEl.className = `confidence confidence-${confidenceLevel}`;
-    confidenceEl.textContent = field.predicted_value ? `${Math.round(field.confidence * 100)}%` : "kein Wert erkannt";
+    if (field.match_status === "matched" && field.predicted_value) {
+      const confidenceLevel = field.confidence >= 0.8 ? "high" : field.confidence >= 0.4 ? "medium" : "low";
+      confidenceEl.className = `confidence confidence-${confidenceLevel}`;
+      confidenceEl.textContent = `${Math.round(field.confidence * 100)}%`;
+    } else {
+      confidenceEl.className = `confidence confidence-${field.match_status === "no_pattern" ? "manual" : "missing"}`;
+      confidenceEl.textContent = STATUS_MESSAGES[field.match_status] ?? "kein Wert erkannt";
+    }
     renderActions();
   }
 

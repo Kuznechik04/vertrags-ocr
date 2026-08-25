@@ -58,7 +58,7 @@ from dataclasses import dataclass
 import pdfplumber
 
 from app.core.config import settings
-from app.ocr.base import BaseOCRModel, FieldPrediction, FieldSpec
+from app.ocr.base import BaseOCRModel, FieldPrediction, FieldSpec, MatchStatus
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,33 @@ class PageData:
     lines: list[list[Word]]
 
 
+@dataclass
+class FieldMatch:
+    value: str | None
+    confidence: float
+    page: int
+    bbox: tuple[float, float, float, float] | None
+    match_status: MatchStatus
+
+
+def _pattern_anchor_prefix(pattern: str) -> str:
+    """Liefert den Teil eines Patterns VOR der ersten nicht-escapten
+    öffnenden Klammer (= der "Anker"-Teil vor der Werte-Capture-Gruppe).
+    Jedes Pattern in diesem System hat laut Konvention genau eine
+    Capture-Gruppe für den Wert (siehe `match.span(1)` in
+    `_match_field_in_pages`) – alles davor ist der Suchbegriff/Kontext, der
+    unabhängig vom eigentlichen Wert geprüft werden kann."""
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "\\":
+            i += 2
+            continue
+        if pattern[i] == "(":
+            return pattern[:i]
+        i += 1
+    return pattern  # keine Gruppe gefunden (Sonderfall bei frei getipptem Regex)
+
+
 class MockOCRModel(BaseOCRModel):
     def page_count(self, file_path: str) -> int:
         if not file_path.lower().endswith(".pdf"):
@@ -132,18 +159,15 @@ class MockOCRModel(BaseOCRModel):
         predictions: list[FieldPrediction] = []
         for field in fields:
             match = self._match_field_in_pages(field.patterns or [], pages)
-            if match:
-                value, confidence, page_number, bbox = match
-            else:
-                value, confidence, page_number, bbox = None, 0.0, 1, None
             predictions.append(
                 FieldPrediction(
                     field_key=field.field_key,
                     field_label=field.field_label,
-                    value=value,
-                    confidence=confidence,
-                    page=page_number,
-                    bbox=bbox,
+                    value=match.value,
+                    confidence=match.confidence,
+                    page=match.page,
+                    bbox=match.bbox,
+                    match_status=match.match_status,
                 )
             )
         return predictions
@@ -232,7 +256,13 @@ class MockOCRModel(BaseOCRModel):
         if is_pdf:
             import fitz  # PyMuPDF
 
-            dpi = 300
+            # 400 statt der oft empfohlenen 300 DPI, da Vertrags-Fließtext/
+            # Klauseln häufig kleine Schrift (<10pt) enthalten, bei der laut
+            # OCR-Best-Practices höhere DPI die Erkennung spürbar verbessert.
+            # Deckelt aber nur nach oben, was PyMuPDF aus dem PDF herausholen
+            # KANN – ein mit niedriger Auflösung eingescanntes PDF gewinnt
+            # dadurch keine Bildinformation hinzu, die nicht schon drin steckt.
+            dpi = 400
             zoom = dpi / 72  # PyMuPDFs Basisauflösung ist 72 DPI
             matrix = fitz.Matrix(zoom, zoom)
             with fitz.open(file_path) as doc:
@@ -360,22 +390,22 @@ class MockOCRModel(BaseOCRModel):
     # Feld-Matching über die extrahierten Wörter
     # ------------------------------------------------------------------
 
-    def _match_field_in_pages(
-        self, patterns: list[str], pages: list[PageData]
-    ) -> tuple[str, float, int, tuple[float, float, float, float]] | None:
+    def _match_field_in_pages(self, patterns: list[str], pages: list[PageData]) -> FieldMatch:
         if not patterns:
-            return None
+            return FieldMatch(value=None, confidence=0.0, page=1, bbox=None, match_status="no_pattern")
 
-        for page_number, page in enumerate(pages, start=1):
+        # Pro Seite den durchsuchbaren Text + Wort-Spans einmal vorbereiten:
+        # Leerzeichen zwischen Wörtern derselben Zeile, "\n" zwischen Zeilen
+        # (wichtig, damit Muster wie `[^\n\.]{3,60}` nicht in die nächste
+        # Zeile "hineinlesen"). Die Zeichen-Offsets pro Wort werden gemerkt,
+        # um einen Regex-Treffer wieder auf die passenden Wort-Bounding-Boxes
+        # abbilden zu können. Wird für den vollen Match-Versuch UND (falls
+        # nötig) den Anker-only-Versuch wiederverwendet.
+        page_texts: list[tuple[str, str, list[tuple[int, int, Word]]]] = []
+        for page in pages:
             if not page.lines:
+                page_texts.append(("", "", []))
                 continue
-
-            # Wörter zu durchsuchbarem Text zusammenfügen: Leerzeichen zwischen
-            # Wörtern derselben Zeile, "\n" zwischen Zeilen (wichtig, damit
-            # Muster wie `[^\n\.]{3,60}` nicht in die nächste Zeile "hineinlesen").
-            # Dabei werden die Zeichen-Offsets pro Wort gemerkt, um einen
-            # Regex-Treffer wieder auf die passenden Wort-Bounding-Boxes abbilden
-            # zu können.
             joined_parts: list[str] = []
             spans: list[tuple[int, int, Word]] = []  # (start, end, word)
             cursor = 0
@@ -392,9 +422,14 @@ class MockOCRModel(BaseOCRModel):
                     cursor += len(word.text)
                     spans.append((start, cursor, word))
             joined_text = "".join(joined_parts)
-            joined_lower = joined_text.lower()
+            page_texts.append((joined_text, joined_text.lower(), spans))
 
-            for pattern_index, pattern in enumerate(patterns):
+        # Stufe 1: volles Muster (Anker + Wert) suchen.
+        for page_number, (joined_text, joined_lower, spans) in enumerate(page_texts, start=1):
+            if not joined_lower:
+                continue
+
+            for pattern in patterns:
                 match = re.search(pattern, joined_lower, flags=re.IGNORECASE)
                 if not match:
                     continue
@@ -419,6 +454,25 @@ class MockOCRModel(BaseOCRModel):
                 bbox = (bbox[0], bbox[1], max_x1 - bbox[0], max_bottom - bbox[1])
 
                 confidence = round(_average_word_confidence(covered_words), 4)
-                return value, confidence, page_number, bbox
+                return FieldMatch(value=value, confidence=confidence, page=page_number, bbox=bbox, match_status="matched")
 
-        return None
+        # Stufe 2: kein volles Muster hat gematcht. Prüfen, ob wenigstens der
+        # Anker-Teil (vor der Werte-Gruppe) irgendwo vorkommt, um "Feld nicht
+        # gefunden" von "Feld gefunden, aber kein Wert erkannt" zu unterscheiden.
+        for _joined_text, joined_lower, _spans in page_texts:
+            if not joined_lower:
+                continue
+            for pattern in patterns:
+                anchor = _pattern_anchor_prefix(pattern)
+                if not anchor:
+                    continue
+                try:
+                    if re.search(anchor, joined_lower, flags=re.IGNORECASE):
+                        return FieldMatch(value=None, confidence=0.0, page=1, bbox=None, match_status="data_not_found")
+                except re.error:
+                    # Frei getipptes Admin-Regex, dessen Präfix allein nicht
+                    # kompilierbar ist – für dieses Pattern keine Aussage
+                    # möglich, konservativ als "nicht gefunden" werten.
+                    continue
+
+        return FieldMatch(value=None, confidence=0.0, page=1, bbox=None, match_status="field_not_found")

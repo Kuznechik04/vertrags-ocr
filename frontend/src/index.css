@@ -446,6 +446,16 @@ body {
   color: var(--danger);
 }
 
+.confidence-missing {
+  background: #fbe7e7;
+  color: var(--danger);
+}
+
+.confidence-manual {
+  background: #eef1f6;
+  color: var(--muted);
+}
+
 .field-row input {
   width: 100%;
   padding: 8px 10px;

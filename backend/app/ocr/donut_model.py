@@ -86,6 +86,11 @@ class DonutOCRModel(BaseOCRModel):
                     page=1,
                     bbox=None,  # Donut liefert standardmäßig keine Bounding Boxes;
                                 # für Bounding Boxes ggf. LayoutLMv3 (Token-Klassifikation) nutzen.
+                    # Donut generiert direkt strukturiertes JSON ohne Anker/Label-
+                    # Konzept – anders als beim Mock-Backend (siehe mock_model.py)
+                    # lässt sich hier nicht unterscheiden, ob das Feld im Dokument
+                    # gar nicht vorkam oder nur kein Wert extrahiert wurde.
+                    match_status="matched" if value is not None else "field_not_found",
                 )
             )
         return predictions

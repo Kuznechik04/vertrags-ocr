@@ -8,6 +8,20 @@ sich am Rest der Anwendung etwas ändert.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+# Warum `value` fehlt (falls es fehlt) – siehe app.ocr.mock_model für die
+# Herleitung im Regex-Backend:
+# - "matched": Wert wurde erkannt.
+# - "field_not_found": Kein Anker-Muster wurde irgendwo im Dokumenttext
+#   gefunden (das Feld scheint im Dokument gar nicht vorzukommen).
+# - "data_not_found": Ein Anker wurde gefunden, aber kein Wert dahinter
+#   passend extrahiert.
+# - "no_pattern": Für dieses Feld ist gar kein automatisches Muster
+#   hinterlegt (z.B. Preset "Kein automatisches Muster") – kein
+#   Erkennungsfehlschlag, das Feld ist von vornherein rein manuell
+#   auszufüllen.
+MatchStatus = Literal["matched", "field_not_found", "data_not_found", "no_pattern"]
 
 
 @dataclass
@@ -18,6 +32,7 @@ class FieldPrediction:
     confidence: float
     page: int = 1
     bbox: tuple[float, float, float, float] | None = None  # x, y, w, h (relative 0..1)
+    match_status: MatchStatus = "matched"
 
 
 @dataclass

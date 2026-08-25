@@ -1,3 +1,5 @@
+export type FieldMatchStatus = "matched" | "field_not_found" | "data_not_found" | "no_pattern";
+
 export interface ContractField {
   id: string;
   field_key: string;
@@ -6,6 +8,7 @@ export interface ContractField {
   corrected_value: string | null;
   final_value: string | null;
   confidence: number;
+  match_status: FieldMatchStatus;
   page: number;
   bbox_x: number | null;
   bbox_y: number | null;

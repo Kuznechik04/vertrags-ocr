@@ -13,6 +13,9 @@ class FieldOut(BaseModel):
     corrected_value: str | None
     final_value: str | None
     confidence: float
+    # Warum predicted_value fehlt (falls es fehlt): "matched" | "field_not_found"
+    # | "data_not_found" | "no_pattern" (siehe app.ocr.base.MatchStatus).
+    match_status: str
     page: int
     bbox_x: float | None
     bbox_y: float | None
@@ -66,6 +69,7 @@ class TrainingExportRow(BaseModel):
     predicted_value: str | None
     final_value: str | None
     was_corrected: bool
+    match_status: str
     confidence: float
     page: int
     bbox_x: float | None
