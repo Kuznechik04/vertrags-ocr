@@ -18,13 +18,14 @@ openpyxl==3.1.5
 
 # torch wird jetzt auch für den Mock-Backend-Standard (docTR/EasyOCR) benötigt,
 # nicht mehr nur fürs Donut-Fine-Tuning.
-torch==2.4.1
+torch==2.6.0
 
 # ML / Fine-Tuning (nur benötigt, wenn ein echtes Modell trainiert/geladen wird)
-transformers==4.44.2
+transformers==4.48.3
+tokenizers==0.21.0
 datasets==2.21.0
 accelerate==0.34.2
-sentencepiece==0.2.0
+sentencepiece==0.2.1
 seqeval==1.2.2
 
 # Optional: nur nötig, wenn statt der Standard-SQLite-DB Postgres genutzt wird
