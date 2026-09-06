@@ -1,4 +1,10 @@
-import type { ContractTemplate, DocumentDetail, DocumentSummary } from "../types/document.js";
+import type {
+  ContractTemplate,
+  DocumentDetail,
+  DocumentSummary,
+  PatternPreviewResult,
+  TemplateSuggestion,
+} from "../types/document.js";
 import type { AuthResponse, CurrentUser } from "../types/auth.js";
 import { getCsrfToken, notifyUnauthenticated } from "./tokenStore.js";
 
@@ -115,6 +121,24 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
+
+  /** Testet Kandidaten-Muster gegen eine Beispieldatei, ohne ein Feld/Template
+   * anzulegen oder die Datei dauerhaft zu speichern. */
+  previewPattern: (file: File, patterns: string[]) => {
+    const form = new FormData();
+    form.append("file", file);
+    for (const pattern of patterns) form.append("patterns", pattern);
+    return request<PatternPreviewResult>("/api/templates/preview-pattern", { method: "POST", body: form });
+  },
+
+  /** Schlägt anhand des Dokumentinhalts vor, welcher Vertragstyp am besten
+   * passt (Score = Anteil der Felder mit Treffer) - Vorschlag, keine
+   * verbindliche Entscheidung, das Dropdown bleibt änderbar. */
+  suggestTemplate: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<TemplateSuggestion[]>("/api/templates/suggest", { method: "POST", body: form });
+  },
 
   uploadDocument: (file: File, templateId: string) => {
     const form = new FormData();

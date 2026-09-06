@@ -39,6 +39,8 @@ function createFieldRow(initialField: ContractField, handlers: FieldListHandlers
 
   const labelEl = h("label", {}, initialField.field_label);
   const confidenceEl = h("span", { class: "confidence" });
+  const ambiguousEl = h("span", { class: "ambiguous-badge" }, "mehrdeutig – bitte prüfen");
+  ambiguousEl.style.display = "none";
 
   const input = h("input", {
     placeholder: "—",
@@ -52,7 +54,7 @@ function createFieldRow(initialField: ContractField, handlers: FieldListHandlers
   const row = h(
     "div",
     { onclick: () => handlers.onSelect(currentField.id) },
-    h("div", { class: "field-row-header" }, labelEl, confidenceEl),
+    h("div", { class: "field-row-header" }, labelEl, ambiguousEl, confidenceEl),
     input,
     actionsEl
   );
@@ -121,6 +123,7 @@ function createFieldRow(initialField: ContractField, handlers: FieldListHandlers
     currentIsDrawing = isDrawing;
     row.className = cls("field-row", isActive && "active", field.is_validated && "validated", isDrawing && "drawing");
     labelEl.textContent = field.field_label;
+    ambiguousEl.style.display = field.ambiguous ? "" : "none";
     if (field.match_status === "matched" && field.predicted_value) {
       const confidenceLevel = field.confidence >= 0.8 ? "high" : field.confidence >= 0.4 ? "medium" : "low";
       confidenceEl.className = `confidence confidence-${confidenceLevel}`;

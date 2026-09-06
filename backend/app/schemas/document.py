@@ -24,6 +24,7 @@ class FieldOut(BaseModel):
     is_validated: bool
     is_corrected: bool
     is_position_corrected: bool
+    ambiguous: bool
 
 
 class FieldUpdate(BaseModel):

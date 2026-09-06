@@ -78,6 +78,10 @@ class ContractField(Base):
 
     is_validated: Mapped[bool] = mapped_column(Boolean, default=False)
     is_corrected: Mapped[bool] = mapped_column(Boolean, default=False)
+    # True, wenn mehrere unterschiedliche Muster für dieses Feld auf
+    # abweichende Werte gekommen sind (siehe app.ocr.mock_model). Signal an
+    # den menschlichen Prüfer, hier besonders genau hinzuschauen.
+    ambiguous: Mapped[bool] = mapped_column(Boolean, default=False)
     # True, wenn die Position (bbox_x/y/w/h + page) manuell vom Nutzer gesetzt/
     # korrigiert wurde (z.B. weil das Modell das Feld gar nicht erkannt hatte).
     # Nützlich als Trainingssignal für ein zukünftiges positionsbewusstes Modell

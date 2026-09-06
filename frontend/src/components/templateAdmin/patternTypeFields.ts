@@ -1,4 +1,6 @@
+import { api } from "../../api/client.js";
 import { h } from "../../lib/dom.js";
+import type { FieldMatchStatus } from "../../types/document.js";
 
 export type FieldValueType =
   | "freitext"
@@ -87,6 +89,19 @@ export function resolvePatterns(
   return [buildPattern(anchor.trim() || fallbackAnchor.trim(), valueType)];
 }
 
+function describeMatch(status: FieldMatchStatus, value: string | null, confidence: number): string {
+  switch (status) {
+    case "matched":
+      return `Treffer: „${value}“ (${Math.round(confidence * 100)}%)`;
+    case "data_not_found":
+      return "Suchbegriff gefunden, aber kein Wert erkannt.";
+    case "field_not_found":
+      return "Nicht gefunden.";
+    case "no_pattern":
+      return "Kein automatisches Muster ausgewählt – nichts zu testen.";
+  }
+}
+
 export interface PatternTypeFieldsInstance {
   el: HTMLElement;
   getValueType(): FieldValueType;
@@ -104,6 +119,9 @@ export function createPatternTypeFields(opts: {
   initialPatternsText?: string;
   anchorPlaceholder: string;
   detailsOpen?: boolean;
+  /** Anzeigename des Feldes, als Fallback-Suchbegriff für `resolvePatterns`
+   * beim "Muster testen" (dieselbe Logik wie beim tatsächlichen Speichern). */
+  getFallbackAnchor?: () => string;
 }): PatternTypeFieldsInstance {
   let valueType = opts.initialValueType;
   let anchor = "";
@@ -154,11 +172,63 @@ export function createPatternTypeFields(opts: {
     )
   );
 
+  // "Muster testen": schließt den bisher fehlenden Vorschau-Loop beim
+  // Anlegen/Bearbeiten von Feldern - vorher gab es keine Rückmeldung, ob ein
+  // Muster funktioniert, außer echte Verträge hochzuladen und die Review-UI
+  // zu prüfen.
+  const testFileInput = h("input", { type: "file", accept: ".pdf,.png,.jpg,.jpeg" }) as HTMLInputElement;
+  const testResultEl = h("span", { class: "pattern-test-result" });
+
+  async function handleTest(): Promise<void> {
+    const file = testFileInput.files?.[0];
+    if (!file) {
+      testResultEl.className = "pattern-test-result pattern-test-error";
+      testResultEl.textContent = "Bitte zuerst eine Testdatei auswählen.";
+      return;
+    }
+
+    const patterns = resolvePatterns(opts.getFallbackAnchor?.() ?? "", valueType, anchor, patternsText);
+    if (!patterns) {
+      testResultEl.className = "pattern-test-result pattern-test-no_pattern";
+      testResultEl.textContent = describeMatch("no_pattern", null, 0);
+      return;
+    }
+
+    testBtn.disabled = true;
+    testResultEl.className = "pattern-test-result";
+    testResultEl.textContent = "Teste …";
+    try {
+      const result = await api.previewPattern(file, patterns);
+      testResultEl.className = `pattern-test-result pattern-test-${result.match_status}`;
+      testResultEl.textContent = describeMatch(result.match_status, result.value, result.confidence);
+    } catch (err) {
+      testResultEl.className = "pattern-test-result pattern-test-error";
+      testResultEl.textContent = err instanceof Error ? err.message : "Test fehlgeschlagen";
+    } finally {
+      testBtn.disabled = false;
+    }
+  }
+
+  const testBtn = h(
+    "button",
+    { type: "button", class: "secondary-btn", onclick: handleTest },
+    "Muster testen"
+  ) as HTMLButtonElement;
+
+  const testRow = h(
+    "div",
+    { class: "pattern-test-row" },
+    h("label", {}, "Testdatei", testFileInput),
+    testBtn,
+    testResultEl
+  );
+
   const el = h(
     "div",
     {},
     h("div", { class: "template-form-row" }, h("label", {}, "Art des Werts", select), anchorLabel),
-    details
+    details,
+    testRow
   );
 
   return {

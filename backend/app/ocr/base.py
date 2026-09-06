@@ -33,6 +33,10 @@ class FieldPrediction:
     page: int = 1
     bbox: tuple[float, float, float, float] | None = None  # x, y, w, h (relative 0..1)
     match_status: MatchStatus = "matched"
+    # True, wenn mehrere unterschiedliche Muster für dieses Feld auf
+    # abweichende Werte gekommen sind (nur vom Mock-Backend gesetzt - Donut
+    # hat kein Konzept mehrerer konkurrierender Muster).
+    ambiguous: bool = False
 
 
 @dataclass

@@ -21,6 +21,7 @@ export function createEditFieldForm(
     initialPatternsText: field.patterns?.join("\n") ?? "",
     anchorPlaceholder: fieldLabel,
     detailsOpen: true,
+    getFallbackAnchor: () => fieldLabel,
   });
 
   const fieldLabelInput = h("input", {

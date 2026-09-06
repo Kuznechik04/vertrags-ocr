@@ -165,6 +165,35 @@ class FieldMatch:
     page: int
     bbox: tuple[float, float, float, float] | None
     match_status: MatchStatus
+    # True, wenn mindestens zwei unterschiedliche Muster für dasselbe Feld
+    # auf voneinander abweichende Werte gekommen sind - ein Signal an den
+    # menschlichen Prüfer, dass die automatische Erkennung sich hier nicht
+    # sicher ist, statt das stillschweigend zu verschlucken.
+    ambiguous: bool = False
+
+
+# Fragment, das patternTypeFields.ts (Frontend) für die generische
+# "Freitext"-Catch-all-Werterkennung erzeugt (siehe VALUE_PATTERNS.freitext,
+# `[^\n\.]{3,80}`). Kein Versuch, Presets vollständig zu erkennen - nur ein
+# grober, dokumentierter Spezifitäts-Abschlag auf die Konfidenz, damit "vom
+# OCR gut lesbar" nicht mit "von einem spezifischen Muster erkannt"
+# verwechselt wird (ein sehr weit gefasstes Muster kann den falschen
+# Textabschnitt genauso "gut lesbar" treffen wie den richtigen).
+_GENERIC_FREITEXT_FRAGMENT = r"[^\n\.]{"
+_FREITEXT_CONFIDENCE_DISCOUNT = 0.85
+
+
+def _is_generic_freitext_pattern(pattern: str) -> bool:
+    return _GENERIC_FREITEXT_FRAGMENT in pattern
+
+
+@dataclass
+class _Candidate:
+    pattern_index: int
+    page_number: int
+    value: str
+    confidence: float
+    bbox: tuple[float, float, float, float]
 
 
 def _pattern_anchor_prefix(pattern: str) -> str:
@@ -207,9 +236,43 @@ class MockOCRModel(BaseOCRModel):
                     page=match.page,
                     bbox=match.bbox,
                     match_status=match.match_status,
+                    ambiguous=match.ambiguous,
                 )
             )
         return predictions
+
+    def preview_match(self, file_path: str, patterns: list[str]) -> FieldMatch:
+        """Testet Kandidaten-Muster gegen eine (i.d.R. temporäre) Beispieldatei,
+        ohne dass dafür ein Template/Feld existieren muss - schließt den beim
+        Anlegen neuer Vertragstypen bisher fehlenden Vorschau-Loop (siehe
+        POST /api/templates/preview-pattern). Nutzt exakt dieselbe
+        Extraktions-/Matching-Logik wie `predict()`, keine Duplikation."""
+        pages = self._extract_pages(file_path)
+        return self._match_field_in_pages(patterns, pages)
+
+    def extract_pages(self, file_path: str) -> list[PageData]:
+        """Öffentlicher Zugriff auf die Text-/Wort-Extraktion, damit sie für
+        mehrere Templates wiederverwendet werden kann (siehe `score_fields`
+        und POST /api/templates/suggest) statt pro Template neu zu laufen -
+        die Extraktion (insbesondere der OCR-Fallback) ist der teure Teil."""
+        return self._extract_pages(file_path)
+
+    def score_fields(self, fields: list[FieldSpec], pages: list[PageData]) -> float:
+        """Anteil der übergebenen Felder (die ein Muster haben), deren Muster
+        in den bereits extrahierten Seiten einen Treffer liefert - die
+        Heuristik hinter dem Vertragstyp-Vorschlag (POST
+        /api/templates/suggest): kein trainierter Klassifikator, sondern
+        dieselbe Matching-Maschinerie, die auch die eigentliche Feld-
+        Erkennung nutzt."""
+        fields_with_patterns = [f for f in fields if f.patterns]
+        if not fields_with_patterns:
+            return 0.0
+        matched = sum(
+            1
+            for f in fields_with_patterns
+            if self._match_field_in_pages(f.patterns, pages).match_status == "matched"
+        )
+        return matched / len(fields_with_patterns)
 
     # ------------------------------------------------------------------
     # Text-/Wort-Extraktion
@@ -513,13 +576,27 @@ class MockOCRModel(BaseOCRModel):
             joined_text = "".join(joined_parts)
             page_texts.append((joined_text, joined_text.lower(), spans))
 
-        # Stufe 1: volles Muster (Anker + Wert) suchen.
-        for page_number, (joined_text, joined_lower, spans) in enumerate(page_texts, start=1):
-            if not joined_lower:
-                continue
+        # Stufe 1: volles Muster (Anker + Wert) suchen. Sammelt ALLE Treffer
+        # über alle Muster x Seiten (bei den üblichen wenigen Mustern/Seiten
+        # pro Dokument vernachlässigbar teuer), statt beim ersten Treffer
+        # zurückzukehren - so lässt sich erkennen, wenn verschiedene Muster
+        # auf unterschiedliche Werte kommen (siehe `ambiguous` in FieldMatch).
+        candidates: list[_Candidate] = []
+        for pattern_index, pattern in enumerate(patterns):
+            for page_number, (joined_text, joined_lower, spans) in enumerate(page_texts, start=1):
+                if not joined_lower:
+                    continue
 
-            for pattern in patterns:
-                match = re.search(pattern, joined_lower, flags=re.IGNORECASE)
+                try:
+                    match = re.search(pattern, joined_lower, flags=re.IGNORECASE)
+                except re.error:
+                    # Frei getipptes Admin-Regex kann syntaktisch kaputt sein
+                    # (Speichern validiert das inzwischen, siehe
+                    # app.schemas.template, aber ältere/direkt in der DB
+                    # angelegte Muster könnten das umgehen) - dieses Muster
+                    # einfach überspringen statt den ganzen Upload mit einem
+                    # unbehandelten re.error abstürzen zu lassen.
+                    continue
                 if not match:
                     continue
 
@@ -543,7 +620,35 @@ class MockOCRModel(BaseOCRModel):
                 bbox = (bbox[0], bbox[1], max_x1 - bbox[0], max_bottom - bbox[1])
 
                 confidence = round(_average_word_confidence(covered_words), 4)
-                return FieldMatch(value=value, confidence=confidence, page=page_number, bbox=bbox, match_status="matched")
+                if _is_generic_freitext_pattern(pattern):
+                    confidence = round(confidence * _FREITEXT_CONFIDENCE_DISCOUNT, 4)
+
+                candidates.append(
+                    _Candidate(
+                        pattern_index=pattern_index,
+                        page_number=page_number,
+                        value=value,
+                        confidence=confidence,
+                        bbox=bbox,
+                    )
+                )
+
+        if candidates:
+            # Frühere Muster gelten als spezifischer/vertrauenswürdiger (die
+            # Reihenfolge ist eine bewusste Admin-Entscheidung beim Anlegen
+            # des Feldes) - das ist der primäre Sortierschlüssel, nicht die
+            # Seitenzahl.
+            best = min(candidates, key=lambda c: (c.pattern_index, c.page_number))
+            distinct_values = {c.value.strip().lower() for c in candidates}
+            ambiguous = len(distinct_values) > 1
+            return FieldMatch(
+                value=best.value,
+                confidence=best.confidence,
+                page=best.page_number,
+                bbox=best.bbox,
+                match_status="matched",
+                ambiguous=ambiguous,
+            )
 
         # Stufe 2: kein volles Muster hat gematcht. Prüfen, ob wenigstens der
         # Anker-Teil (vor der Werte-Gruppe) irgendwo vorkommt, um "Feld nicht

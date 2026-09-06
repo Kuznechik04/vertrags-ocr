@@ -17,6 +17,7 @@ export interface ContractField {
   is_validated: boolean;
   is_corrected: boolean;
   is_position_corrected: boolean;
+  ambiguous: boolean;
 }
 
 export type DocumentStatus =
@@ -56,4 +57,18 @@ export interface ContractTemplate {
   key: string;
   name: string;
   fields: TemplateField[];
+}
+
+export interface PatternPreviewResult {
+  value: string | null;
+  confidence: number;
+  page: number;
+  match_status: FieldMatchStatus;
+}
+
+export interface TemplateSuggestion {
+  template_id: string;
+  template_key: string;
+  template_name: string;
+  score: number;
 }

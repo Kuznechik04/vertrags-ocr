@@ -148,6 +148,23 @@ body {
   color: var(--primary);
 }
 
+.pending-upload {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.suggestion-hint {
+  color: var(--success);
+  font-size: 13px;
+}
+
 .doc-table {
   width: 100%;
   border-collapse: collapse;
@@ -456,6 +473,16 @@ body {
   color: var(--muted);
 }
 
+.ambiguous-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fef3e0;
+  color: var(--warning);
+  margin-right: 6px;
+}
+
 .field-row input {
   width: 100%;
   padding: 8px 10px;
@@ -647,6 +674,50 @@ body {
 }
 
 .pattern-badge.manual {
+  background: #eef1f6;
+  color: var(--muted);
+}
+
+.pattern-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.pattern-test-row input[type="file"] {
+  flex: 1;
+}
+
+.pattern-test-result {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.pattern-test-result:empty {
+  padding: 0;
+}
+
+.pattern-test-matched {
+  background: #e5f7ee;
+  color: var(--success);
+}
+
+.pattern-test-data_not_found {
+  background: #fef3e0;
+  color: var(--warning);
+}
+
+.pattern-test-field_not_found,
+.pattern-test-error {
+  background: #fbe7e7;
+  color: var(--danger);
+}
+
+.pattern-test-no_pattern {
   background: #eef1f6;
   color: var(--muted);
 }

@@ -1,11 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import get_current_admin, get_current_user
 from app.models.template import ContractTemplate, TemplateField
 from app.models.user import User
-from app.schemas.template import TemplateCreate, TemplateFieldCreate, TemplateFieldUpdate, TemplateOut
+from app.ocr.base import FieldSpec
+from app.ocr.mock_model import MockOCRModel
+from app.schemas.template import (
+    PatternPreviewOut,
+    TemplateCreate,
+    TemplateFieldCreate,
+    TemplateFieldUpdate,
+    TemplateOut,
+    TemplateSuggestionOut,
+)
+from app.services.uploads import temp_upload_file
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
 
@@ -15,6 +25,69 @@ def list_templates(user: User = Depends(get_current_user), db: Session = Depends
     """Alle Vertragstyp-Templates inkl. ihrer Felder – für die Vertragstyp-Auswahl
     beim Upload und zum Anzeigen, welche Felder ein Template aktuell hat."""
     return db.query(ContractTemplate).all()
+
+
+@router.post("/preview-pattern", response_model=PatternPreviewOut)
+def preview_pattern(
+    file: UploadFile = File(...),
+    patterns: list[str] = Form(...),
+    admin: User = Depends(get_current_admin),
+):
+    """Testet Kandidaten-Muster gegen eine Beispieldatei, OHNE ein Template/
+    Feld anzulegen oder die Datei dauerhaft zu speichern - schließt den beim
+    Anlegen neuer Vertragstypen bisher fehlenden Vorschau-Loop (vorher: Muster
+    blind speichern -> echten Vertrag hochladen -> Review-UI prüfen -> Muster
+    editieren -> erneut hochladen). Läuft unabhängig von OCR_BACKEND immer
+    gegen das Regex-Backend, da Muster-Authoring nur dafür Sinn ergibt."""
+    with temp_upload_file(file) as tmp_path:
+        match = MockOCRModel().preview_match(str(tmp_path), patterns)
+    return PatternPreviewOut(
+        value=match.value,
+        confidence=match.confidence,
+        page=match.page,
+        match_status=match.match_status,
+    )
+
+
+@router.post("/suggest", response_model=list[TemplateSuggestionOut])
+def suggest_template(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Schlägt anhand des Dokumentinhalts vor, welcher Vertragstyp am besten
+    passt (Score = Anteil der Felder mit Muster-Treffer) - ein reiner
+    Vorschlag, keine automatische Entscheidung. Behebt, dass die
+    Vertragstyp-Auswahl beim Upload bisher zu 100% manuell war: ein falsch
+    gewähltes Template führte zu stiller Fehlextraktion, die wie
+    "Erkennung funktioniert nicht" aussah. Bewusst kein trainierter
+    Klassifikator - nutzt dieselbe Muster-Matching-Maschinerie wie die
+    eigentliche Feld-Erkennung wieder, statt Trainingsdaten/Eval-
+    Infrastruktur vorauszusetzen, die es (noch) nicht gibt."""
+    templates = db.query(ContractTemplate).all()
+
+    model = MockOCRModel()
+    with temp_upload_file(file) as tmp_path:
+        pages = model.extract_pages(str(tmp_path))
+
+        suggestions: list[TemplateSuggestionOut] = []
+        for template in templates:
+            fields = [
+                FieldSpec(field_key=f.field_key, field_label=f.field_label, patterns=f.patterns)
+                for f in template.fields
+            ]
+            score = model.score_fields(fields, pages)
+            suggestions.append(
+                TemplateSuggestionOut(
+                    template_id=template.id,
+                    template_key=template.key,
+                    template_name=template.name,
+                    score=round(score, 4),
+                )
+            )
+
+    suggestions.sort(key=lambda s: s.score, reverse=True)
+    return suggestions
 
 
 @router.post("", response_model=TemplateOut, status_code=201)

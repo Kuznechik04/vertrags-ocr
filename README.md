@@ -78,7 +78,11 @@ Die App unterstützt mehrere Nutzerkonten mit E-Mail/Passwort-Login (JWT-Token):
 > Mehrnutzerbetrieb habt: Diese Datei enthält noch keine `users`-Tabelle bzw.
 > `owner_id`-Spalte. Am einfachsten für die lokale Entwicklung: die Datei löschen
 > (`rm backend/vertrags_ocr.db`) und beim nächsten Start neu anlegen lassen –
-> alte Test-Uploads gehen dabei verloren.
+> alte Test-Uploads gehen dabei verloren. Gleiches gilt für jede spätere neue
+> Spalte an einem bestehenden Modell (z.B. `ambiguous` an `contract_fields`) –
+> `Base.metadata.create_all()` legt nur fehlende Tabellen an, keine fehlenden
+> Spalten an bereits existierenden Tabellen (es gibt aktuell keine
+> Migrations-Tooling wie Alembic, siehe Verbesserungs-Roadmap).
 
 ## Voraussetzungen
 

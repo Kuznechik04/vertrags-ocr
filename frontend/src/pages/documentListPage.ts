@@ -14,6 +14,9 @@ export function renderDocumentListPage(container: HTMLElement): void {
   let loading = false;
   let error: string | null = null;
   let exporting = false;
+  let pendingFiles: File[] | null = null;
+  let suggesting = false;
+  let suggestionHint: string | null = null;
 
   const page = h("div", { class: "page" });
   container.appendChild(page);
@@ -30,8 +33,45 @@ export function renderDocumentListPage(container: HTMLElement): void {
     rerender();
   }
 
-  async function handleUpload(files: FileList | null, fileInput: HTMLInputElement): Promise<void> {
+  /** Wird ausgelöst, sobald Dateien gewählt wurden (Datei-Dialog oder Drop) -
+   * lädt noch NICHT direkt hoch, sondern holt zuerst einen
+   * Vertragstyp-Vorschlag anhand des Dokumentinhalts (reiner Vorschlag, das
+   * Dropdown bleibt änderbar) und wartet auf den expliziten
+   * "Hochladen"-Klick. Vorher wurde beim Auswählen sofort mit dem zuletzt
+   * eingestellten Dropdown-Wert hochgeladen - ein falsch stehen gebliebener
+   * Vertragstyp führte dann zu stiller Fehlextraktion. */
+  async function handleFilesChosen(files: FileList | null): Promise<void> {
     if (!files || files.length === 0) return;
+    pendingFiles = Array.from(files);
+    suggestionHint = null;
+    error = null;
+    suggesting = true;
+    rerender();
+    try {
+      const suggestions = await api.suggestTemplate(pendingFiles[0]);
+      const best = suggestions[0];
+      if (best && best.score > 0) {
+        selectedTemplateId = best.template_id;
+        suggestionHint = `Vorschlag: „${best.template_name}“ (basierend auf Dokumentinhalt) – bei Bedarf oben ändern.`;
+      }
+    } catch {
+      // Der Vorschlag ist nur ein Komfort-Feature - schlägt er fehl (z.B.
+      // Datei nicht lesbar), einfach ohne Vorschlag weitermachen; die
+      // eigentliche Fehlerbehandlung passiert beim tatsächlichen Upload.
+    } finally {
+      suggesting = false;
+      rerender();
+    }
+  }
+
+  function handleCancelPending(): void {
+    pendingFiles = null;
+    suggestionHint = null;
+    rerender();
+  }
+
+  async function handleUploadClick(): Promise<void> {
+    if (!pendingFiles || pendingFiles.length === 0) return;
     if (!selectedTemplateId) {
       error = "Kein Vertragstyp verfügbar – Upload nicht möglich.";
       rerender();
@@ -41,15 +81,16 @@ export function renderDocumentListPage(container: HTMLElement): void {
     error = null;
     rerender();
     try {
-      for (const file of Array.from(files)) {
+      for (const file of pendingFiles) {
         await api.uploadDocument(file, selectedTemplateId);
       }
       await loadDocuments();
+      pendingFiles = null;
+      suggestionHint = null;
     } catch (err) {
       error = err instanceof Error ? err.message : "Upload fehlgeschlagen";
     } finally {
       loading = false;
-      fileInput.value = "";
       rerender();
     }
   }
@@ -81,7 +122,7 @@ export function renderDocumentListPage(container: HTMLElement): void {
       accept: ".pdf,.png,.jpg,.jpeg",
       multiple: true,
       hidden: true,
-      onchange: (e: Event) => handleUpload((e.target as HTMLInputElement).files, e.target as HTMLInputElement),
+      onchange: (e: Event) => handleFilesChosen((e.target as HTMLInputElement).files),
     }) as HTMLInputElement;
 
     const templateSelect = h(
@@ -123,13 +164,35 @@ export function renderDocumentListPage(container: HTMLElement): void {
           ondragover: (e: Event) => e.preventDefault(),
           ondrop: (e: DragEvent) => {
             e.preventDefault();
-            handleUpload(e.dataTransfer?.files ?? null, fileInput);
+            handleFilesChosen(e.dataTransfer?.files ?? null);
           },
           onclick: () => fileInput.click(),
         },
         fileInput,
-        loading ? "Verarbeite Upload …" : "Vertrag(e) hierher ziehen oder klicken zum Hochladen"
+        loading ? "Lade hoch …" : "Vertrag(e) hierher ziehen oder klicken zum Auswählen"
       ),
+      pendingFiles
+        ? h(
+            "div",
+            { class: "pending-upload" },
+            h(
+              "span",
+              {},
+              `${pendingFiles.length} Datei(en) ausgewählt${suggesting ? " – prüfe Vertragstyp …" : ""}`
+            ),
+            suggestionHint ? h("span", { class: "suggestion-hint" }, suggestionHint) : null,
+            h(
+              "button",
+              { class: "primary-btn", disabled: loading || suggesting, onclick: () => handleUploadClick() },
+              loading ? "Lade hoch …" : "Hochladen"
+            ),
+            h(
+              "button",
+              { class: "link-btn", disabled: loading, onclick: () => handleCancelPending() },
+              "Abbrechen"
+            )
+          )
+        : null,
       error ? h("div", { class: "error-banner" }, error) : null,
       h(
         "table",

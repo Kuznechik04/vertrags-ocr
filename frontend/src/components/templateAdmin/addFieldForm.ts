@@ -11,7 +11,11 @@ export function createAddFieldForm(
   let keyTouched = false;
   let fieldLabel = "";
 
-  const patternFields = createPatternTypeFields({ initialValueType: "freitext", anchorPlaceholder: "" });
+  const patternFields = createPatternTypeFields({
+    initialValueType: "freitext",
+    anchorPlaceholder: "",
+    getFallbackAnchor: () => fieldLabel,
+  });
 
   const fieldKeyInput = h("input", {
     placeholder: "wird aus dem Anzeigenamen abgeleitet",

@@ -15,15 +15,13 @@ from app.ocr.base import FieldSpec
 from app.ocr.registry import get_ocr_model
 from app.core.security import create_preview_token
 from app.schemas.document import DocumentDetailOut, DocumentOut, FieldUpdate, PreviewTokenOut, TrainingExportRow
-from app.services.file_signatures import EXTENSIONS, sniff_content_type
+from app.services.file_signatures import EXTENSIONS
+from app.services.uploads import UPLOAD_CHUNK_SIZE, sniff_and_validate
 from app.services.xlsx_export import build_multi_document_xlsx, build_single_document_xlsx
 
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
-
-ALLOWED_TYPES = {"application/pdf", "image/png", "image/jpeg"}
-UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _get_owned_document(document_id: str, user: User, db: Session) -> Document:
@@ -44,14 +42,7 @@ def upload_document(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Der Client-`Content-Type`-Header lässt sich beliebig fälschen und wird
-    # daher nur als Hinweis genutzt - maßgeblich ist die anhand der ersten
-    # Bytes erkannte tatsächliche Signatur der Datei (siehe file_signatures.py).
-    head = file.file.read(16)
-    file.file.seek(0)
-    sniffed_type = sniff_content_type(head)
-    if sniffed_type is None or sniffed_type not in ALLOWED_TYPES:
-        raise HTTPException(400, "Dateityp nicht unterstützt oder Datei beschädigt")
+    sniffed_type = sniff_and_validate(file)
 
     template = db.get(ContractTemplate, template_id)
     if not template:
@@ -125,6 +116,7 @@ def _run_ocr(document: Document, db: Session) -> None:
                 bbox_y=bbox_y,
                 bbox_w=bbox_w,
                 bbox_h=bbox_h,
+                ambiguous=pred.ambiguous,
             )
         )
 
