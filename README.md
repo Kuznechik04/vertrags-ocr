@@ -53,8 +53,15 @@ Die App unterstützt mehrere Nutzerkonten mit E-Mail/Passwort-Login (JWT-Token):
   Admins können aktuell nur direkt in der Datenbank befördert werden
   (`UPDATE users SET role = 'admin' WHERE email = '...'`) – ein Admin-UI dafür
   ist eine sinnvolle nächste Ausbaustufe.
+  ⚠️ **Achtung**: Da der allererste registrierte Nutzer automatisch Admin wird,
+  `/api/auth/register` erst öffentlich erreichbar machen, nachdem der eigene
+  Admin-Account angelegt wurde (bzw. nach jedem Zurücksetzen der Datenbank
+  zuerst selbst registrieren, bevor die Instanz für andere erreichbar ist).
 - **Wichtig für Produktivbetrieb**: `SECRET_KEY` in `backend/.env` unbedingt auf
-  einen zufälligen, geheimen Wert setzen (siehe `.env.example`).
+  einen zufälligen, geheimen Wert setzen (siehe `.env.example`). Sobald
+  `ENVIRONMENT` auf einen anderen Wert als `development` gesetzt wird,
+  verweigert die App den Start, falls `SECRET_KEY` noch der unsichere
+  Default-Wert ist.
 
 > Falls ihr bereits eine `vertrags_ocr.db` aus einer Version vor dem
 > Mehrnutzerbetrieb habt: Diese Datei enthält noch keine `users`-Tabelle bzw.

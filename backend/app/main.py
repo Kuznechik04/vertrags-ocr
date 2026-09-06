@@ -9,11 +9,19 @@ from app.core.db import Base, SessionLocal, engine
 from app.models import document, template, user  # noqa: F401  (Modelle registrieren, damit create_all sie kennt)
 from app.models.template import ContractTemplate, TemplateField
 
-app = FastAPI(title=settings.app_name)
+app = FastAPI(title=settings.app_name, debug=settings.debug)
+
+# Die hartcodierten Dev-Origins gelten nur in der lokalen Entwicklung - in
+# jeder anderen Umgebung zählt ausschließlich das konfigurierte
+# FRONTEND_ORIGIN, damit CORS in Produktion nicht versehentlich offener ist
+# als beabsichtigt.
+_cors_origins = [settings.frontend_origin]
+if settings.environment == "development":
+    _cors_origins += ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin, "http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

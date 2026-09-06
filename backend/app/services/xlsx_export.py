@@ -23,6 +23,20 @@ if TYPE_CHECKING:
 HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = "2F6FED"
 
+# Zeichen, mit denen Excel/LibreOffice eine Zelle als aktive Formel statt als
+# Text interpretiert (CWE-1236 "Formula Injection"). Werte, die vom Nutzer
+# stammen (korrigierte Feldwerte, Dateinamen, ...) und mit einem dieser
+# Zeichen beginnen, werden vor dem Export escaped.
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _excel_safe(value: str) -> str:
+    """Erzwingt reinen Text statt einer von Excel/LibreOffice ausgeführten
+    Formel, indem ein führendes Apostroph vorangestellt wird."""
+    if value.startswith(_FORMULA_TRIGGER_CHARS):
+        return f"'{value}"
+    return value
+
 
 def _collect_field_columns(documents: list[Document]) -> list[tuple[str, str]]:
     """Sammelt die (field_key, field_label)-Paare, die in den zu exportierenden
@@ -65,7 +79,7 @@ def _field_values_and_details(document: Document, field_keys: list[str]) -> tupl
     details: dict = {}
     for key in field_keys:
         field = fields_by_key.get(key)
-        values.append((field.final_value or "") if field else "")
+        values.append(_excel_safe((field.final_value or "") if field else ""))
         if field:
             details[key] = {
                 "konfidenz": round(field.confidence, 2),
@@ -116,8 +130,8 @@ def build_multi_document_xlsx(documents: list[Document]) -> BytesIO:
         values, details = _field_values_and_details(document, field_keys)
         ws.append(
             [
-                document.filename,
-                document.owner_email or document.owner_id,
+                _excel_safe(document.filename),
+                _excel_safe(document.owner_email or document.owner_id),
                 document.status.value if hasattr(document.status, "value") else document.status,
             ]
             + values

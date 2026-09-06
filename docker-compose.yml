@@ -11,6 +11,11 @@ services:
       UPLOAD_DIR: ./data/uploads
       OCR_BACKEND: mock
       FRONTEND_ORIGIN: http://localhost:5173
+      ENVIRONMENT: development
+      # Für den Produktivbetrieb: ENVIRONMENT auf einen anderen Wert setzen
+      # und SECRET_KEY auf einen zufälligen Wert, z.B.
+      #   python -c "import secrets; print(secrets.token_hex(32))"
+      # (die App verweigert sonst den Start, siehe README).
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:

@@ -1,18 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import get_current_user
+from app.core.rate_limit import enforce_ip_rate_limit
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.user import User, UserRole
 from app.schemas.auth import Token, UserCreate, UserOut
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+# Grobe Brute-Force-/Spam-Bremse pro Client-IP. Bewusst grob (in-memory,
+# einzelner Prozess) - Details siehe app.core.rate_limit.
+REGISTER_RATE_LIMIT = {"max_attempts": 10, "window_seconds": 60}
+LOGIN_RATE_LIMIT = {"max_attempts": 10, "window_seconds": 60}
+
 
 @router.post("/register", response_model=Token, status_code=201)
-def register(payload: UserCreate, db: Session = Depends(get_db)):
+def register(request: Request, payload: UserCreate, db: Session = Depends(get_db)):
+    enforce_ip_rate_limit(request, key_prefix="register", **REGISTER_RATE_LIMIT)
+
     existing = db.query(User).filter(User.email == payload.email.lower()).first()
     if existing:
         raise HTTPException(400, "Diese E-Mail-Adresse ist bereits registriert")
@@ -35,7 +43,9 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    enforce_ip_rate_limit(request, key_prefix="login", **LOGIN_RATE_LIMIT)
+
     # OAuth2PasswordRequestForm nutzt das Feld "username" für die E-Mail-Adresse
     user = db.query(User).filter(User.email == form_data.username.lower()).first()
     if not user or not verify_password(form_data.password, user.hashed_password):

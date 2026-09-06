@@ -1,4 +1,3 @@
-import shutil
 import uuid
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from app.models.user import User, UserRole
 from app.ocr.base import FieldSpec
 from app.ocr.registry import get_ocr_model
 from app.schemas.document import DocumentDetailOut, DocumentOut, FieldUpdate, TrainingExportRow
+from app.services.file_signatures import EXTENSIONS, sniff_content_type
 from app.services.xlsx_export import build_multi_document_xlsx, build_single_document_xlsx
 
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -22,6 +22,7 @@ XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.s
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 ALLOWED_TYPES = {"application/pdf", "image/png", "image/jpeg"}
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _get_owned_document(document_id: str, user: User, db: Session) -> Document:
@@ -42,19 +43,35 @@ def upload_document(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if file.content_type not in ALLOWED_TYPES:
-        raise HTTPException(400, f"Dateityp nicht unterstützt: {file.content_type}")
+    # Der Client-`Content-Type`-Header lässt sich beliebig fälschen und wird
+    # daher nur als Hinweis genutzt - maßgeblich ist die anhand der ersten
+    # Bytes erkannte tatsächliche Signatur der Datei (siehe file_signatures.py).
+    head = file.file.read(16)
+    file.file.seek(0)
+    sniffed_type = sniff_content_type(head)
+    if sniffed_type is None or sniffed_type not in ALLOWED_TYPES:
+        raise HTTPException(400, "Dateityp nicht unterstützt oder Datei beschädigt")
 
     template = db.get(ContractTemplate, template_id)
     if not template:
         raise HTTPException(400, "Unbekannter Vertragstyp (template_id)")
 
     doc_id = str(uuid.uuid4())
-    suffix = Path(file.filename or "upload").suffix or ".pdf"
+    suffix = EXTENSIONS[sniffed_type]
     dest_path = settings.upload_dir / f"{doc_id}{suffix}"
 
-    with dest_path.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    size = 0
+    try:
+        with dest_path.open("wb") as out:
+            while chunk := file.file.read(UPLOAD_CHUNK_SIZE):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(413, f"Datei zu groß (max. {settings.max_upload_size_mb} MB)")
+                out.write(chunk)
+    except HTTPException:
+        dest_path.unlink(missing_ok=True)
+        raise
 
     document = Document(
         id=doc_id,
@@ -62,7 +79,7 @@ def upload_document(
         template_id=template.id,
         filename=file.filename or dest_path.name,
         file_path=str(dest_path),
-        content_type=file.content_type,
+        content_type=sniffed_type,
         status=DocumentStatus.PROCESSING,
     )
     db.add(document)
