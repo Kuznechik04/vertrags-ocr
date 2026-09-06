@@ -70,6 +70,11 @@ class PreviewTokenOut(BaseModel):
 class TrainingExportRow(BaseModel):
     document_id: str
     filename: str
+    # Vertragstyp-Key des Dokuments (siehe app.models.template.ContractTemplate.key) -
+    # ohne dieses Feld würde training/train_donut.py Felder aus allen
+    # Vertragstypen in ein gemeinsames Vokabular/Prompt mischen, siehe
+    # TODO.md Punkt 1.
+    template_key: str
     field_key: str
     field_label: str
     predicted_value: str | None

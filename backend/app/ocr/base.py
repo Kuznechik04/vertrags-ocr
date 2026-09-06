@@ -57,7 +57,13 @@ class BaseOCRModel:
     Vertragstyp-Template des Dokuments) – die Backends legen keinen festen
     Feldkatalog mehr selbst fest."""
 
-    def predict(self, file_path: str, fields: list[FieldSpec]) -> list[FieldPrediction]:
+    def predict(
+        self, file_path: str, fields: list[FieldSpec], template_key: str | None = None
+    ) -> list[FieldPrediction]:
+        """`template_key` (siehe app.models.template.ContractTemplate.key) ist
+        optional und wird nur von `DonutOCRModel` genutzt (pro Vertragstyp
+        eigener Decoder-Prompt, siehe donut_model.py) - das Mock-Backend
+        bekommt den nötigen Kontext bereits vollständig über `fields`."""
         raise NotImplementedError
 
     def page_count(self, file_path: str) -> int:

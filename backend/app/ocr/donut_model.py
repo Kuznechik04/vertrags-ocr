@@ -39,13 +39,38 @@ class DonutOCRModel(BaseOCRModel):
                 return doc.page_count
         return 1
 
-    def predict(self, file_path: str, fields: list[FieldSpec]) -> list[FieldPrediction]:
-        image = self._load_first_page_as_image(file_path)
+    def predict(
+        self, file_path: str, fields: list[FieldSpec], template_key: str | None = None
+    ) -> list[FieldPrediction]:
+        image = self._load_page_images(file_path)
 
-        task_prompt = "<s_contract>"
-        decoder_input_ids = self.processor.tokenizer(
+        # Ein eigener Decoder-Prompt pro Vertragstyp-Template (statt eines
+        # einzigen fixen "<s_contract>" für alle) - sonst würde ein auf
+        # mehreren Vertragstypen trainiertes Modell deren Feld-Vokabular in
+        # einem gemeinsamen, nicht unterscheidbaren Prompt vermischen (siehe
+        # training/train_donut.py, TODO.md Punkt 1). "contract" als Fallback
+        # hält ältere, vor diesem Feature trainierte Modelle lauffähig.
+        task_prompt = f"<s_{template_key or 'contract'}>"
+        task_token_ids = self.processor.tokenizer(
             task_prompt, add_special_tokens=False, return_tensors="pt"
         ).input_ids
+        # Ein mit genau einem Vertragstyp trainiertes Modell (auch ältere,
+        # vor diesem Feature trainierte Checkpoints) hat decoder_start_token_id
+        # exakt auf das Task-Token selbst gesetzt - dort darf kein
+        # zusätzliches BOS vorangestellt werden. Ein mit mehreren
+        # Vertragstypen trainiertes Modell nutzt stattdessen den (von allen
+        # Vertragstypen unabhängigen) Tokenizer-BOS als gemeinsamen Start,
+        # mit dem Task-Token direkt danach (siehe train_donut.py). Welcher
+        # Fall vorliegt, lässt sich am geladenen Modell selbst ablesen, statt
+        # es zu erraten.
+        decoder_start_token_id = self.model.config.decoder_start_token_id
+        if decoder_start_token_id is not None and decoder_start_token_id == task_token_ids[0, 0].item():
+            decoder_input_ids = task_token_ids
+        else:
+            bos_token = self.processor.tokenizer.bos_token or ""
+            decoder_input_ids = self.processor.tokenizer(
+                bos_token + task_prompt, add_special_tokens=False, return_tensors="pt"
+            ).input_ids
 
         pixel_values = self.processor(image, return_tensors="pt").pixel_values
 
@@ -103,7 +128,19 @@ class DonutOCRModel(BaseOCRModel):
         except Exception:
             return 0.0
 
-    def _load_first_page_as_image(self, file_path: str):
+    # Deckelt, wie viele Seiten maximal ins zusammengesetzte Bild einfließen -
+    # muss mit training/train_donut.py's MAX_PAGES übereinstimmen, sonst
+    # sieht das Modell bei der Inferenz eine andere Bildform/-verteilung als
+    # beim Training.
+    MAX_PAGES = 4
+
+    def _load_page_images(self, file_path: str):
+        """Rendert bis zu `MAX_PAGES` Seiten und fügt sie vertikal zu einem
+        einzigen Bild zusammen (Donut nimmt nur ein Bild pro Vorhersage
+        entgegen). Vorher wurde ausschließlich Seite 1 genutzt, wodurch
+        Vertragsinhalt auf späteren Seiten komplett verloren ging - sowohl
+        hier als auch beim Training (siehe training/train_donut.py,
+        load_image)."""
         from PIL import Image
 
         if file_path.lower().endswith(".pdf"):
@@ -113,6 +150,21 @@ class DonutOCRModel(BaseOCRModel):
             zoom = dpi / 72  # PyMuPDFs Basisauflösung ist 72 DPI
             matrix = fitz.Matrix(zoom, zoom)
             with fitz.open(file_path) as doc:
-                pix = doc[0].get_pixmap(matrix=matrix)
-                return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        return Image.open(file_path).convert("RGB")
+                images = [
+                    Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    for pix in (page.get_pixmap(matrix=matrix) for page in doc[: self.MAX_PAGES])
+                ]
+        else:
+            images = [Image.open(file_path).convert("RGB")]
+
+        if len(images) == 1:
+            return images[0]
+
+        width = max(image.width for image in images)
+        total_height = sum(image.height for image in images)
+        composite = Image.new("RGB", (width, total_height), color="white")
+        y = 0
+        for image in images:
+            composite.paste(image, (0, y))
+            y += image.height
+        return composite

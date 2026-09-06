@@ -218,14 +218,20 @@ pip install -r requirements.txt
 python prepare_dataset.py --api http://localhost:8000 --out ./data/dataset
 
 # 2. Donut fine-tunen (Richtwert: mind. 200-500 validierte Verträge für
-#    brauchbare Generalisierung; mit wenigen Beispielen testet ihr nur die Pipeline)
+#    brauchbare Generalisierung; mit wenigen Beispielen testet ihr nur die Pipeline).
+#    Landet automatisch in einem zeitgestempelten Unterordner unter --output
+#    (z.B. ./output/contract-donut/20260906-143000/) mit einer metadata.json
+#    (u.a. Val-Feld-Exact-Match, falls genug Dokumente für einen Split da waren).
 python train_donut.py --manifest ./data/dataset/manifest.jsonl \
     --output ./output/contract-donut --epochs 10
 
-# 3. Backend auf das neue Modell umstellen
-#    In backend/.env setzen:
+# Für Weitertraining auf neu validierten Daten (statt immer neu ab dem
+# Basismodell): --continue-from <vorheriger-Zeitstempel-Ordner>
+
+# 3. Nach Prüfung der Metrik in metadata.json: Backend auf das neue Modell
+#    umstellen. In backend/.env setzen:
 #    OCR_BACKEND=donut
-#    MODEL_PATH=../training/output/contract-donut
+#    MODEL_PATH=../training/output/contract-donut/20260906-143000
 ```
 
 ## Konfidenzwerte
@@ -233,14 +239,25 @@ python train_donut.py --manifest ./data/dataset/manifest.jsonl \
 Die im UI angezeigte Konfidenz (z.B. "78 %") ist **kein fixer Wert** – sie
 hängt vom jeweils aktiven Backend ab:
 
-- **Mock-Backend**: rein heuristisch, abgeleitet aus der Position des
-  getroffenen Regex-Musters in `PATTERNS` (`backend/app/ocr/mock_model.py`,
-  `CONFIDENCE_BY_PATTERN_RANK`). Ein spezifischeres, erstes Muster ergibt eine
-  höhere Konfidenz als ein generischeres, weiter hinten stehendes Muster. Das
-  ist eine grobe Krücke, keine kalibrierte Wahrscheinlichkeit.
-- **Donut-Backend**: echte Konfidenz, berechnet aus den Softmax-Scores der
-  Modell-Generation (`DonutOCRModel._sequence_confidence`) – sobald ihr auf
-  ein eigenes trainiertes Modell umsteigt, wird der Wert also aussagekräftiger.
+- **Mock-Backend**: die durchschnittliche OCR-Worterkennungssicherheit der am
+  Treffer beteiligten Wörter (100 % bei Treffern aus der eingebetteten
+  PDF-Textebene, da dort keine Bilderkennung stattfand) – siehe
+  `_average_word_confidence` in `backend/app/ocr/mock_model.py`. Das misst
+  also in erster Linie **Lesbarkeit**, nicht ob der *richtige* Textabschnitt
+  gefunden wurde. Zwei zusätzliche Signale ergänzen das:
+  - Der generische "Freitext"-Catch-all (`[^\n\.]{3,80}`) bekommt einen
+    kleinen, dokumentierten Konfidenz-Abschlag gegenüber engeren, spezifischen
+    Mustern (IBAN/Datum/PLZ/…), da er leicht auch den falschen Textabschnitt
+    "gut lesbar" trifft.
+  - Kommen für ein Feld mehrere Muster mit unterschiedlichen Werten zum
+    Zug, wird das Feld zusätzlich als `ambiguous` markiert (Hinweis
+    "mehrdeutig – bitte prüfen" im Review-UI), statt einen der Werte
+    stillschweigend zu bevorzugen.
+- **Donut-Backend**: eine einzige Sequenz-Konfidenz aus den Softmax-Scores der
+  Modell-Generation (`DonutOCRModel._sequence_confidence`), identisch auf alle
+  Felder eines Dokuments angewendet (kein Wert pro Feld wie beim
+  Mock-Backend) – sobald ihr auf ein eigenes trainiertes Modell umsteigt, wird
+  der Wert aussagekräftiger.
 
 ## Erweiterungsideen
 

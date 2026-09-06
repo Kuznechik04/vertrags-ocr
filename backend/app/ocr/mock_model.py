@@ -221,7 +221,13 @@ class MockOCRModel(BaseOCRModel):
         with pdfplumber.open(file_path) as pdf:
             return len(pdf.pages)
 
-    def predict(self, file_path: str, fields: list[FieldSpec]) -> list[FieldPrediction]:
+    def predict(
+        self, file_path: str, fields: list[FieldSpec], template_key: str | None = None
+    ) -> list[FieldPrediction]:
+        # template_key wird hier nicht gebraucht: `fields` ist bereits auf den
+        # Feldkatalog des jeweiligen Vertragstyp-Templates zugeschnitten (nur
+        # DonutOCRModel nutzt template_key zusätzlich für einen eigenen
+        # Decoder-Prompt pro Vertragstyp, siehe donut_model.py).
         pages = self._extract_pages(file_path)
 
         predictions: list[FieldPrediction] = []

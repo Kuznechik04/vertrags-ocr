@@ -97,7 +97,7 @@ def _run_ocr(document: Document, db: Session) -> None:
         FieldSpec(field_key=f.field_key, field_label=f.field_label, patterns=f.patterns)
         for f in document.template.fields
     ]
-    predictions = model.predict(document.file_path, fields)
+    predictions = model.predict(document.file_path, fields, template_key=document.template.key)
 
     for pred in predictions:
         bbox_x = bbox_y = bbox_w = bbox_h = None
@@ -152,6 +152,7 @@ def export_training_data(admin: User = Depends(get_current_admin), db: Session =
                 TrainingExportRow(
                     document_id=doc.id,
                     filename=doc.filename,
+                    template_key=doc.template.key,
                     field_key=field.field_key,
                     field_label=field.field_label,
                     predicted_value=field.predicted_value,

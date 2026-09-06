@@ -75,6 +75,7 @@ def main() -> None:
         manifest.append(
             {
                 "document_id": doc_id,
+                "template_key": fields[0]["template_key"],
                 "source_file": str(dest_file),
                 "ground_truth": {"gt_parse": target},
             }
