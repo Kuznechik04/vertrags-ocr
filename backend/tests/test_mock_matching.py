@@ -67,3 +67,26 @@ def test_generic_freitext_pattern_gets_confidence_discount():
     # generische Freitext-Abschlag muss das spürbar senken.
     assert match.match_status == "matched"
     assert match.confidence < 1.0
+
+
+def test_umlaut_dropped_by_ocr_still_matches_anchor():
+    """Regression-Guard: manche OCR-Engines lassen Umlaut-Punkte bei
+    bestimmten Schriftarten/Scans weg (beobachtet z.B. bei "Kündigungsfrist"
+    -> "Kundigungsfrist"). Ein Suchbegriff mit korrekt geschriebenem Umlaut
+    darf dann nicht komplett leer ausgehen."""
+    model = MockOCRModel()
+    # ocr_confidence gesetzt, um zu simulieren, dass dieses Wort über den
+    # OCR-Fallback erkannt wurde (nicht über die eingebettete PDF-Textebene).
+    page = _page(
+        [
+            Word(text="kundigungsfrist", x0=0.1, x1=0.3, top=0.1, bottom=0.12, ocr_confidence=90.0),
+            Word(text="3", x0=0.31, x1=0.33, top=0.1, bottom=0.12, ocr_confidence=90.0),
+            Word(text="monate", x0=0.34, x1=0.4, top=0.1, bottom=0.12, ocr_confidence=90.0),
+        ]
+    )
+    pattern = r"kündigungsfrist\s*:?\s*([^\n\.]{3,40})"
+
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "3 monate"

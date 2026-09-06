@@ -196,6 +196,22 @@ class _Candidate:
     bbox: tuple[float, float, float, float]
 
 
+_UMLAUT_FOLD = str.maketrans({"ü": "u", "Ü": "U", "ä": "a", "Ä": "A", "ö": "o", "Ö": "O"})
+
+
+def _fold_umlauts(text: str) -> str:
+    """Faltet deutsche Umlaute auf ihren Grundbuchstaben (ü->u, ä->a, ö->o) -
+    jede Ersetzung ist genau 1 Zeichen für 1 Zeichen, damit Zeichen-Offsets
+    für die Wort-Bounding-Box-Zuordnung erhalten bleiben (anders als z.B.
+    ü->ue, was die Länge verändern würde). Manche OCR-Engines lassen bei
+    bestimmten Schriftarten/Scans die Umlaut-Punkte weg (beobachtet z.B. bei
+    "Kündigungsfrist" -> "Kundigungsfrist", "München" -> "Munchen") - ein
+    Admin-Suchbegriff mit korrekt geschriebenem Umlaut würde dann nie
+    matchen. Nur als Fallback genutzt, wenn die direkte Suche fehlschlägt,
+    damit ein korrekt erkannter Umlaut weiterhin Vorrang hat."""
+    return text.translate(_UMLAUT_FOLD)
+
+
 def _pattern_anchor_prefix(pattern: str) -> str:
     """Liefert den Teil eines Patterns VOR der ersten nicht-escapten
     öffnenden Klammer (= der "Anker"-Teil vor der Werte-Capture-Gruppe).
@@ -595,6 +611,17 @@ class MockOCRModel(BaseOCRModel):
 
                 try:
                     match = re.search(pattern, joined_lower, flags=re.IGNORECASE)
+                    if not match:
+                        # Fallback: OCR lässt Umlaut-Punkte bei manchen
+                        # Scans/Schriftarten weg (siehe _fold_umlauts) - erst
+                        # nach der direkten Suche versuchen, damit ein
+                        # korrekt erkannter Umlaut Vorrang hat. Die Faltung
+                        # ist 1:1 zeichentreu, `match.span(1)` bleibt also
+                        # gegenüber `spans`/`joined_text` (unverändert, ohne
+                        # Faltung) gültig.
+                        match = re.search(
+                            _fold_umlauts(pattern), _fold_umlauts(joined_lower), flags=re.IGNORECASE
+                        )
                 except re.error:
                     # Frei getipptes Admin-Regex kann syntaktisch kaputt sein
                     # (Speichern validiert das inzwischen, siehe
@@ -667,7 +694,10 @@ class MockOCRModel(BaseOCRModel):
                 if not anchor:
                     continue
                 try:
-                    if re.search(anchor, joined_lower, flags=re.IGNORECASE):
+                    found = re.search(anchor, joined_lower, flags=re.IGNORECASE) or re.search(
+                        _fold_umlauts(anchor), _fold_umlauts(joined_lower), flags=re.IGNORECASE
+                    )
+                    if found:
                         return FieldMatch(value=None, confidence=0.0, page=1, bbox=None, match_status="data_not_found")
                 except re.error:
                     # Frei getipptes Admin-Regex, dessen Präfix allein nicht
