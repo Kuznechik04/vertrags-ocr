@@ -13,7 +13,8 @@ from app.models.template import ContractTemplate
 from app.models.user import User, UserRole
 from app.ocr.base import FieldSpec
 from app.ocr.registry import get_ocr_model
-from app.schemas.document import DocumentDetailOut, DocumentOut, FieldUpdate, TrainingExportRow
+from app.core.security import create_preview_token
+from app.schemas.document import DocumentDetailOut, DocumentOut, FieldUpdate, PreviewTokenOut, TrainingExportRow
 from app.services.file_signatures import EXTENSIONS, sniff_content_type
 from app.services.xlsx_export import build_multi_document_xlsx, build_single_document_xlsx
 
@@ -205,6 +206,21 @@ def export_document_xlsx(document_id: str, user: User = Depends(get_current_user
         buffer,
         media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'},
+    )
+
+
+@router.get("/{document_id}/preview-token", response_model=PreviewTokenOut)
+def get_document_preview_token(
+    document_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """Kurzlebiger, auf `document_id` beschränkter Token für die anschließende
+    <img>/<iframe>-Dateivorschau (siehe get_document_file). Verhindert, dass
+    das langlebige Session-Cookie/-Token dafür in einer URL landen müsste
+    (Browser-Historie, Server-/Proxy-Logs, Referer-Header)."""
+    _get_owned_document(document_id, user, db)  # nur Zugriffsrecht prüfen
+    token = create_preview_token(subject=user.id, document_id=document_id)
+    return PreviewTokenOut(
+        preview_token=token, expires_in_seconds=int(settings.preview_token_expire_minutes * 60)
     )
 
 

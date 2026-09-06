@@ -1,4 +1,3 @@
-import { api } from "../api/client.js";
 import { h } from "../lib/dom.js";
 import type { ContractField, DocumentDetail } from "../types/document.js";
 import { createImageViewer } from "./imageViewer.js";
@@ -11,12 +10,15 @@ export interface DocumentPreviewInstance {
 }
 
 /** Wählt ImageViewer/PdfViewer nach content_type, reicht Teardown durch.
- * Wird einmal pro Dokument erstellt (siehe imageViewer.ts/pdfViewer.ts). */
+ * Wird einmal pro Dokument erstellt (siehe imageViewer.ts/pdfViewer.ts).
+ * `fileUrl` enthält bereits einen kurzlebigen Preview-Token (siehe
+ * api.fileUrl in api/client.ts) - wird vom Aufrufer vorab geholt, da diese
+ * Komponente selbst synchron erstellt wird. */
 export function createDocumentPreview(
   doc: DocumentDetail,
+  fileUrl: string,
   onDrawComplete: (page: number, bbox: [number, number, number, number]) => void
 ): DocumentPreviewInstance {
-  const fileUrl = api.fileUrl(doc.id);
   const isImage = doc.content_type.startsWith("image/");
   const viewer = isImage
     ? createImageViewer(fileUrl, doc.filename, onDrawComplete)

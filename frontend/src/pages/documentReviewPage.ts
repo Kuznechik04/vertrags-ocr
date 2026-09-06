@@ -61,7 +61,8 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
 
   async function load(): Promise<void> {
     doc = await api.getDocument(id);
-    preview = createDocumentPreview(doc, handleDrawComplete);
+    const fileUrl = await api.fileUrl(id);
+    preview = createDocumentPreview(doc, fileUrl, handleDrawComplete);
     bodySlot.append(preview.el, fieldList.el);
     mount(container, page);
     updateAll();

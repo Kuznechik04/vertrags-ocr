@@ -64,6 +64,15 @@ Die App unterstützt mehrere Nutzerkonten mit E-Mail/Passwort-Login (JWT-Token):
   Default-Wert ist.
 - **Datenschutz/Aufbewahrung**: siehe [`PRIVACY.md`](./PRIVACY.md) – insbesondere
   vor dem ersten Upload echter (personenbezogener) Vertragsdaten lesen.
+- **Session-Auth**: Der JWT-Session-Token liegt in einem httpOnly-Cookie
+  (nicht mehr in `localStorage`), zusätzlich gibt es ein nicht-httpOnly
+  CSRF-Cookie, das das Frontend als `X-CSRF-Token`-Header auf verändernde
+  Requests zurückschickt. Für einen Produktivbetrieb mit Frontend und Backend
+  auf unterschiedlichen Domains (nicht nur unterschiedlichen Ports wie im
+  lokalen Setup) müssen Cookie-`Domain`/`SameSite` ggf. angepasst werden
+  (`backend/app/api/auth.py`, `_set_auth_cookies`). API-Clients wie
+  `training/prepare_dataset.py` sind davon nicht betroffen – sie nutzen
+  weiterhin `Authorization: Bearer <token>` aus der Login-Antwort.
 
 > Falls ihr bereits eine `vertrags_ocr.db` aus einer Version vor dem
 > Mehrnutzerbetrieb habt: Diese Datei enthält noch keine `users`-Tabelle bzw.

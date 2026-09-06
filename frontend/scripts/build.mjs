@@ -14,12 +14,16 @@ const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:8000";
 const sourceHtml = path.join(rootDir, "index.html");
 const targetHtml = path.join(distDir, "index.html");
 if (existsSync(sourceHtml)) {
-  const html = readFileSync(sourceHtml, "utf8").replace(
-    /apiBaseUrl:\s*"[^"]*"/,
-    `apiBaseUrl: ${JSON.stringify(apiBaseUrl)}`,
-  );
-  writeFileSync(targetHtml, html);
+  copyFileSync(sourceHtml, targetHtml);
 }
+
+// Externe Datei statt Inline-<script> in index.html, damit die Content-
+// Security-Policy (siehe scripts/dev-server.mjs) für script-src ohne
+// 'unsafe-inline' auskommt.
+writeFileSync(
+  path.join(distDir, "app-config.js"),
+  `window.__APP_CONFIG__ = ${JSON.stringify({ apiBaseUrl })};\n`,
+);
 
 for (const file of ["index.css", "App.css"]) {
   const sourceFile = path.join(rootDir, "src", file);

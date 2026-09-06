@@ -1,4 +1,3 @@
-import { getToken } from "../api/tokenStore.js";
 import { h } from "../lib/dom.js";
 import { pdfjsLib } from "../lib/pdfjs.js";
 import type { ContractField } from "../types/document.js";
@@ -128,11 +127,10 @@ export function createPdfViewer(
 
   async function load(): Promise<void> {
     try {
-      const token = getToken();
-      const loadingTask = pdfjsLib.getDocument({
-        url: fileUrl,
-        httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
+      // fileUrl enthält bereits einen kurzlebigen Preview-Token als
+      // Query-Parameter (siehe api.fileUrl in api/client.ts) - kein
+      // zusätzlicher Authorization-Header nötig.
+      const loadingTask = pdfjsLib.getDocument({ url: fileUrl });
       const pdf = await loadingTask.promise;
       if (cancelled) return;
 

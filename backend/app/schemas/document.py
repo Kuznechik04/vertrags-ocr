@@ -61,6 +61,11 @@ class DocumentDetailOut(DocumentOut):
     fields: list[FieldOut]
 
 
+class PreviewTokenOut(BaseModel):
+    preview_token: str
+    expires_in_seconds: int
+
+
 class TrainingExportRow(BaseModel):
     document_id: str
     filename: str

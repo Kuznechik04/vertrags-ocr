@@ -1,6 +1,6 @@
 /** Pub-Sub-Store als Ersatz für den bisherigen React-Context. */
 import { api } from "../api/client.js";
-import { getToken, onTokenChange, setToken } from "../api/tokenStore.js";
+import { onUnauthenticated } from "../api/tokenStore.js";
 import type { CurrentUser } from "../types/auth.js";
 
 export interface AuthState {
@@ -26,15 +26,12 @@ export function subscribe(listener: (state: AuthState) => void): () => void {
 }
 
 async function refreshUser(): Promise<void> {
-  if (!getToken()) {
-    setState({ user: null, loading: false });
-    return;
-  }
+  // Der Session-Token liegt in einem httpOnly-Cookie - JS kann seine
+  // Existenz nicht direkt prüfen, daher hier immer beim Server nachfragen.
   try {
     const user = await api.me();
     setState({ user, loading: false });
   } catch {
-    setToken(null);
     setState({ user: null, loading: false });
   }
 }
@@ -46,24 +43,31 @@ export function init(): void {
   if (initialized) return;
   initialized = true;
   refreshUser();
-  onTokenChange(() => {
-    refreshUser();
+  onUnauthenticated(() => {
+    // Ein 401 sagt uns bereits definitiv, dass die Session ungültig ist -
+    // hier direkt auf "ausgeloggt" setzen statt erneut refreshUser() (also
+    // wieder api.me()) aufzurufen. Das würde selbst bei jedem weiteren 401
+    // erneut notifyUnauthenticated() auslösen und in eine Endlosschleife aus
+    // /api/auth/me-Requests laufen (auch schon beim allerersten Laden ohne
+    // bestehende Session).
+    setState({ user: null, loading: false });
   });
 }
 
 export async function login(email: string, password: string): Promise<void> {
   const res = await api.login(email, password);
-  setToken(res.access_token);
   setState({ user: res.user, loading: false });
 }
 
 export async function register(email: string, password: string): Promise<void> {
   const res = await api.register(email, password);
-  setToken(res.access_token);
   setState({ user: res.user, loading: false });
 }
 
-export function logout(): void {
-  setToken(null);
-  setState({ user: null, loading: false });
+export async function logout(): Promise<void> {
+  try {
+    await api.logout();
+  } finally {
+    setState({ user: null, loading: false });
+  }
 }

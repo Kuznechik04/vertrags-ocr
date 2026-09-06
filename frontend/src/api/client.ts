@@ -1,26 +1,32 @@
 import type { ContractTemplate, DocumentDetail, DocumentSummary } from "../types/document.js";
 import type { AuthResponse, CurrentUser } from "../types/auth.js";
-import { getToken, setToken } from "./tokenStore.js";
+import { getCsrfToken, notifyUnauthenticated } from "./tokenStore.js";
 
 // Basis-URL für das Backend; in der HTML-Datei kann sie per window.__APP_CONFIG__
 // gesetzt werden. So wird kein Vite-Env-Setup mehr benötigt.
 const BASE_URL = window.__APP_CONFIG__?.apiBaseUrl ?? "";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = getToken();
   const headers: Record<string, string> = {};
   if (!(options?.body instanceof FormData) && !(options?.body instanceof URLSearchParams)) {
     headers["Content-Type"] = "application/json";
   }
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  // Nur für verändernde Requests relevant (das Backend prüft es nur dort),
+  // schadet aber nicht, ihn immer mitzuschicken, wenn vorhanden.
+  const csrfToken = getCsrfToken();
+  if (csrfToken) {
+    headers["X-CSRF-Token"] = csrfToken;
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers: { ...headers, ...options?.headers } });
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...options,
+    credentials: "include", // Session-Cookie (httpOnly) automatisch mitschicken
+    headers: { ...headers, ...options?.headers },
+  });
 
   if (res.status === 401) {
-    // Token ist abgelaufen/ungültig -> Nutzer muss sich neu anmelden
-    setToken(null);
+    // Session ist abgelaufen/ungültig -> Nutzer muss sich neu anmelden
+    notifyUnauthenticated();
   }
 
   if (!res.ok) {
@@ -32,16 +38,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 /** Lädt eine Datei (z.B. Excel-Export) authentifiziert herunter und stößt den
- * Browser-Download an – ein einfacher `<a href>` würde den Authorization-Header
- * nicht mitschicken können. */
+ * Browser-Download an – ein einfacher `<a href>` würde das Session-Cookie
+ * zwar automatisch mitschicken, aber `credentials: "include"` muss trotzdem
+ * explizit gesetzt werden (Cross-Origin-Fetch schickt Cookies sonst nicht mit). */
 async function downloadFile(path: string, fallbackFilename: string): Promise<void> {
-  const token = getToken();
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  });
+  const res = await fetch(`${BASE_URL}${path}`, { credentials: "include" });
 
   if (res.status === 401) {
-    setToken(null);
+    notifyUnauthenticated();
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
@@ -78,6 +82,8 @@ export const api = {
   },
 
   me: () => request<CurrentUser>("/api/auth/me"),
+
+  logout: () => request<void>("/api/auth/logout", { method: "POST" }),
 
   listDocuments: () => request<DocumentSummary[]>("/api/documents"),
 
@@ -117,9 +123,13 @@ export const api = {
     return request<DocumentDetail>("/api/documents/upload", { method: "POST", body: form });
   },
 
-  fileUrl: (id: string) => {
-    const token = getToken();
-    return `${BASE_URL}/api/documents/${id}/file${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  /** Holt einen kurzlebigen, auf `id` beschränkten Preview-Token und baut
+   * damit die URL für <img>/<iframe>-Dateivorschauen. Bewusst kein
+   * langlebiger Session-Token in der URL (Browser-Historie, Server-/Proxy-
+   * Logs, Referer-Header) - siehe backend/app/api/documents.py preview-token. */
+  fileUrl: async (id: string) => {
+    const { preview_token } = await request<{ preview_token: string }>(`/api/documents/${id}/preview-token`);
+    return `${BASE_URL}/api/documents/${id}/file?preview_token=${encodeURIComponent(preview_token)}`;
   },
 
   updateField: (

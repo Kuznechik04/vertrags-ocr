@@ -52,6 +52,23 @@ class Settings(BaseSettings):
     secret_key: str = INSECURE_DEFAULT_SECRET_KEY
     access_token_expire_minutes: int = 60 * 24  # 24h
 
+    # Session-Cookie (httpOnly): ersetzt localStorage als Speicherort des
+    # JWTs im Browser, um es vor XSS-Zugriff zu schützen. Der csrf_cookie ist
+    # bewusst NICHT httpOnly (das Frontend muss ihn per JS lesen und als
+    # Header zurückschicken - "Double-Submit-Cookie"-Pattern).
+    session_cookie_name: str = "access_token"
+    csrf_cookie_name: str = "csrf_token"
+    # Kurzlebiger, auf ein einzelnes Dokument beschränkter Token für
+    # <img>/<iframe>-Dateivorschauen, die keinen Authorization-Header
+    # mitschicken können (siehe app.core.security.create_preview_token).
+    preview_token_expire_minutes: float = 2
+
+    @property
+    def cookie_secure(self) -> bool:
+        """Cookies nur mit `Secure`-Flag ausliefern, wenn nicht in lokaler
+        Entwicklung (dort läuft alles über HTTP ohne TLS)."""
+        return self.environment != "development"
+
     @model_validator(mode="after")
     def _check_secret_key(self) -> "Settings":
         """Verhindert, dass ein Deployment mit ENVIRONMENT != "development"

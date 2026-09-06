@@ -9,13 +9,11 @@
   </head>
   <body>
     <div id="root"></div>
-    <script>
-      // apiBaseUrl wird von scripts/build.mjs beim Build ersetzt (Default:
-      // http://localhost:8000, überschreibbar per API_BASE_URL-Env-Var).
-      window.__APP_CONFIG__ = {
-        apiBaseUrl: "",
-      };
-    </script>
+    <!-- Von scripts/build.mjs generiert (Default: http://localhost:8000,
+         überschreibbar per API_BASE_URL-Env-Var) - als externe Datei statt
+         Inline-Script, damit script-src in der Content-Security-Policy ohne
+         'unsafe-inline' auskommt (siehe scripts/dev-server.mjs). -->
+    <script src="/dist/app-config.js"></script>
     <script type="importmap">
       {
         "imports": {
