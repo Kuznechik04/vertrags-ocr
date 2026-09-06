@@ -60,13 +60,16 @@ def main() -> None:
 
     manifest = []
     for doc_id, fields in by_doc.items():
-        filename = fields[0]["filename"]
+        suffix = Path(fields[0]["filename"]).suffix
         target = {f["field_key"]: (f["final_value"] or "") for f in fields}
 
-        # Original-Dokument (für die Bild-Konvertierung durch train_donut.py) herunterladen
+        # Original-Dokument (für die Bild-Konvertierung durch train_donut.py) herunterladen.
+        # Bewusst ohne den vom Nutzer vergebenen Original-Dateinamen im lokalen
+        # Trainingsdatensatz - der kann personenbezogene Daten enthalten (z.B.
+        # den Namen des Vertragspartners); nur die Dateiendung wird übernommen.
         file_resp = requests.get(f"{args.api}/api/documents/{doc_id}/file", headers=headers, timeout=30)
         file_resp.raise_for_status()
-        dest_file = images_dir / f"{doc_id}_{filename}"
+        dest_file = images_dir / f"{doc_id}{suffix}"
         dest_file.write_bytes(file_resp.content)
 
         manifest.append(

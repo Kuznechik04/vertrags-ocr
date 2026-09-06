@@ -62,6 +62,8 @@ Die App unterstützt mehrere Nutzerkonten mit E-Mail/Passwort-Login (JWT-Token):
   `ENVIRONMENT` auf einen anderen Wert als `development` gesetzt wird,
   verweigert die App den Start, falls `SECRET_KEY` noch der unsichere
   Default-Wert ist.
+- **Datenschutz/Aufbewahrung**: siehe [`PRIVACY.md`](./PRIVACY.md) – insbesondere
+  vor dem ersten Upload echter (personenbezogener) Vertragsdaten lesen.
 
 > Falls ihr bereits eine `vertrags_ocr.db` aus einer Version vor dem
 > Mehrnutzerbetrieb habt: Diese Datei enthält noch keine `users`-Tabelle bzw.
