@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.db import Base, SessionLocal, engine
 from app.models import document, template, user  # noqa: F401  (Modelle registrieren, damit create_all sie kennt)
 from app.models.template import ContractTemplate, TemplateField
+from app.ocr.mlp_template import MLP_FIELDS
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
@@ -130,19 +131,29 @@ SEED_TEMPLATES: list[dict] = [
             ("unterschriftsdatum", "Unterschriftsdatum", None),
         ],
     },
+    {
+        "key": "mlp_bauantrag",
+        "name": "MLP Antrag",
+        "fields": MLP_FIELDS,
+    },
 ]
 
 
 def _seed_templates() -> None:
     db = SessionLocal()
     try:
-        if db.query(ContractTemplate).first() is not None:
-            return
         for template_def in SEED_TEMPLATES:
-            tpl = ContractTemplate(key=template_def["key"], name=template_def["name"])
-            db.add(tpl)
-            db.flush()
-            for order, (field_key, field_label, patterns) in enumerate(template_def["fields"]):
+            tpl = db.query(ContractTemplate).filter(ContractTemplate.key == template_def["key"]).first()
+            if tpl is None:
+                tpl = ContractTemplate(key=template_def["key"], name=template_def["name"])
+                db.add(tpl)
+                db.flush()
+
+            existing_keys = {field.field_key for field in tpl.fields}
+            next_order = max((field.sort_order for field in tpl.fields), default=-1) + 1
+            for order, (field_key, field_label, patterns) in enumerate(template_def["fields"], start=next_order):
+                if field_key in existing_keys:
+                    continue
                 db.add(
                     TemplateField(
                         template_id=tpl.id,

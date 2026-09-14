@@ -59,6 +59,7 @@ import pdfplumber
 
 from app.core.config import settings
 from app.ocr.base import BaseOCRModel, FieldPrediction, FieldSpec, MatchStatus
+from app.ocr.mlp_template import RELEVANT_PAGE_COUNT
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,8 @@ class MockOCRModel(BaseOCRModel):
         # Feldkatalog des jeweiligen Vertragstyp-Templates zugeschnitten (nur
         # DonutOCRModel nutzt template_key zusätzlich für einen eigenen
         # Decoder-Prompt pro Vertragstyp, siehe donut_model.py).
-        pages = self._extract_pages(file_path)
+        max_pages = RELEVANT_PAGE_COUNT if template_key == "mlp_bauantrag" else None
+        pages = self._extract_pages(file_path, max_pages=max_pages)
 
         predictions: list[FieldPrediction] = []
         for field in fields:
@@ -300,10 +302,10 @@ class MockOCRModel(BaseOCRModel):
     # Text-/Wort-Extraktion
     # ------------------------------------------------------------------
 
-    def _extract_pages(self, file_path: str) -> list[PageData]:
+    def _extract_pages(self, file_path: str, max_pages: int | None = None) -> list[PageData]:
         is_pdf = file_path.lower().endswith(".pdf")
 
-        pdf_pages = self._extract_pages_via_pdfplumber(file_path) if is_pdf else []
+        pdf_pages = self._extract_pages_via_pdfplumber(file_path, max_pages=max_pages) if is_pdf else []
         total_chars = sum(len(w.text) for page in pdf_pages for line in page.lines for w in line)
 
         if total_chars >= MIN_TRUSTED_TEXT_LENGTH:
@@ -312,15 +314,18 @@ class MockOCRModel(BaseOCRModel):
         # Kein/kaum Text gefunden -> vermutlich gescanntes PDF oder direkt ein
         # Bild-Upload. Fallback auf Tesseract-OCR (liefert Wortpositionen als Pixel,
         # die wir ebenfalls auf 0..1 normieren).
-        ocr_pages = self._extract_pages_via_ocr(file_path, is_pdf)
+        ocr_pages = self._extract_pages_via_ocr(file_path, is_pdf, max_pages=max_pages)
         if any(page.lines for page in ocr_pages):
             return ocr_pages
         return pdf_pages
 
-    def _extract_pages_via_pdfplumber(self, file_path: str) -> list[PageData]:
+    def _extract_pages_via_pdfplumber(
+        self, file_path: str, max_pages: int | None = None
+    ) -> list[PageData]:
         pages: list[PageData] = []
         with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
+            source_pages = pdf.pages if max_pages is None else pdf.pages[:max_pages]
+            for page in source_pages:
                 width, height = page.width, page.height
                 if not width or not height:
                     pages.append(PageData(lines=[]))
@@ -362,9 +367,11 @@ class MockOCRModel(BaseOCRModel):
             lines.append(current_line)
         return lines
 
-    def _extract_pages_via_ocr(self, file_path: str, is_pdf: bool) -> list[PageData]:
+    def _extract_pages_via_ocr(
+        self, file_path: str, is_pdf: bool, max_pages: int | None = None
+    ) -> list[PageData]:
         try:
-            images = self._load_images(file_path, is_pdf)
+            images = self._load_images(file_path, is_pdf, max_pages=max_pages)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Konnte Dokument nicht als Bild laden für OCR (%s): %s", file_path, exc)
             return []
@@ -376,7 +383,9 @@ class MockOCRModel(BaseOCRModel):
             return self._ocr_pages_with_easyocr(images)
         return self._ocr_pages_with_doctr(images)
 
-    def _load_images(self, file_path: str, is_pdf: bool) -> list:
+    def _load_images(
+        self, file_path: str, is_pdf: bool, max_pages: int | None = None
+    ) -> list:
         from PIL import Image
 
         if is_pdf:
@@ -392,9 +401,10 @@ class MockOCRModel(BaseOCRModel):
             zoom = dpi / 72  # PyMuPDFs Basisauflösung ist 72 DPI
             matrix = fitz.Matrix(zoom, zoom)
             with fitz.open(file_path) as doc:
+                pages = list(doc) if max_pages is None else list(doc)[:max_pages]
                 images = [
                     Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                    for pix in (page.get_pixmap(matrix=matrix) for page in doc)
+                    for pix in (page.get_pixmap(matrix=matrix) for page in pages)
                 ]
         else:
             images = [Image.open(file_path).convert("RGB")]
