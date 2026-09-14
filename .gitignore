@@ -10,3 +10,4 @@ training/data/
 training/output/
 training/.venv/
 .DS_Store
+testsamples/vertraege/MLP_Anträge/
