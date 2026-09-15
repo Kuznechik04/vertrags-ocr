@@ -17,9 +17,21 @@ YES_NO = r"(?:ja|nein|yes|no|[xX])"
 TEXT = r"[^\n.]{2,120}"
 
 
+def _escape_label(label: str) -> str:
+    """Wie `re.escape`, aber Leerzeichen zwischen Wörtern werden zu `\\s+`
+    statt literalen Leerzeichen. Lange Feldbeschriftungen (v.a. die
+    Checkbox-Fragen unten, z.B. "Absicherung der groben Fahrlässigkeit bis
+    20.000 EUR?") brechen im echten Formular häufig über eine Zeile um - im
+    extrahierten Text wird so ein Umbruch zu "\\n" statt einem Leerzeichen
+    (siehe Zeilentrennung in `mock_model._match_field_in_pages`), ein
+    literales Leerzeichen im Anker würde das Matching dann komplett
+    verfehlen statt nur ungenauer zu werden."""
+    return r"\s+".join(re.escape(word) for word in label.split())
+
+
 def _label(label: str, value: str = TEXT, *aliases: str) -> list[str]:
     labels = (label,) + aliases
-    return [rf"{re.escape(item)}\s*:?\s*({value})" for item in labels]
+    return [rf"{_escape_label(item)}\s*:?\s*({value})" for item in labels]
 
 
 def _checkbox(label: str, *aliases: str) -> list[str]:
@@ -33,6 +45,42 @@ def _date(label: str, *aliases: str) -> list[str]:
 
 def _money(label: str, *aliases: str) -> list[str]:
     return _label(label, MONEY, *aliases)
+
+
+def _scoped_label(section_anchor: str, label: str, value: str = TEXT, *aliases: str) -> list[str]:
+    """Wie `_label`, verlangt aber zusätzlich, dass `section_anchor` (z.B.
+    die Frage "Gibt es einen abweichenden Kontoinhaber?") im Text VOR diesem
+    Label vorkommt.
+
+    Grund: Mehrere Formularabschnitte verwenden dieselben generischen
+    Beschriftungen (z.B. "Name", "Geburtsdatum", "Straße u. Haus-Nr." sowohl
+    beim Antragsteller als auch beim abweichenden Kontoinhaber). Ohne
+    Einschränkung gewinnt in `_match_field_in_pages` schlicht der Treffer auf
+    der frühesten Seite/mit dem frühesten Muster - unabhängig davon, zu
+    welchem Formularabschnitt er eigentlich gehört. Damit hätte z.B. das
+    Feld "kontoinhaber_name" fälschlich den Namen des Antragstellers
+    übernommen, obwohl beide Werte unterschiedlich sind.
+
+    Nutzt ein nicht-gieriges `(?:...)`-Präfix vor dem eigentlichen Label;
+    das dazwischenliegende `.*?` braucht DOTALL, um über Zeilenumbrüche
+    hinweg zu matchen (siehe `re.DOTALL` in `mock_model._match_field_in_pages`).
+    Anker und Label müssen dafür auf derselben Seite stehen, da dort pro
+    Feld je Seite einzeln gesucht wird."""
+    labels = (label,) + aliases
+    return [
+        rf"(?:{_escape_label(section_anchor)}.*?){_escape_label(item)}\s*:?\s*({value})"
+        for item in labels
+    ]
+
+
+def _scoped_date(section_anchor: str, label: str, *aliases: str) -> list[str]:
+    return _scoped_label(section_anchor, label, DATE, *aliases)
+
+
+# Abschnitts-Anker für `_scoped_label`/`_scoped_date` unten - jeweils der
+# Text der Frage/Überschrift, die den jeweiligen Formularabschnitt einleitet.
+KONTOINHABER_ANCHOR = "Gibt es einen abweichenden Kontoinhaber?"
+RISIKOORT_ANCHOR = "Versicherungsort"
 
 
 MLP_FIELDS: list[tuple[str, str, list[str]]] = [
@@ -74,18 +122,18 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("nettobeitrag_gesamt", "Nettobeitrag", _money("Nettobeitrag (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag gesamt")),
     ("gesamtbeitrag_versicherungssteuer", "Gesamtbeitrag inkl. Versicherungssteuer", _money("Gesamtbeitrag inkl. Versicherungssteuer")),
     ("versicherungsort", "Versicherungsort/ Risikoort", _label("Versicherungsort/ Risikoort", TEXT, "Versicherungsort", "Risikoort")),
-    ("risikoort_strasse_hausnummer", "Straße u. Haus-Nr. (Risikoort)", _label("Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer")),
+    ("risikoort_strasse_hausnummer", "Straße u. Haus-Nr. (Risikoort)", _scoped_label(RISIKOORT_ANCHOR, "Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer")),
     ("risikoort_plz", "PLZ Risikoort", _label("PLZ Risikoort", r"\d{5}", "PLZ des Risikoorts")),
     ("vorversicherung", "Vorversicherung vorhanden?", _checkbox("Vorversicherung vorhanden?")),
     ("antrag_abgelehnt", "Ähnlicher Antrag abgelehnt?", _checkbox("Ist bereits ein ähnlicher Antrag abgelehnt worden?", "ähnlicher Antrag abgelehnt")),
     ("schaeden_letzte_5_jahre", "Schäden in den letzten 5 Jahren", _checkbox("Waren Sie in den letzten 5 Jahren von Schäden betroffen?", "Schäden in den letzten 5 Jahren")),
     ("besondere_hinweise", "Besondere Hinweise und Vereinbarungen", _label("Besondere Hinweise und Vereinbarungen", r"[^\n]{2,500}")),
     ("abweichender_kontoinhaber", "Abweichender Kontoinhaber vorhanden?", _checkbox("Gibt es einen abweichenden Kontoinhaber?")),
-    ("kontoinhaber_name", "Name Kontoinhaber", _label("Name", TEXT)),
+    ("kontoinhaber_name", "Name Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "Name", TEXT)),
     ("kontoinhaber_firmenname", "Firmenname Kontoinhaber", _label("Firmenname", TEXT)),
-    ("kontoinhaber_geburtsdatum", "Geburtsdatum Kontoinhaber", _date("Geburtsdatum")),
-    ("kontoinhaber_strasse", "Straße, Hausnummer Kontoinhaber", _label("Straße, Hausnummer", TEXT)),
-    ("kontoinhaber_plz_ort", "PLZ, Ort Kontoinhaber", _label("PLZ, Ort", TEXT)),
+    ("kontoinhaber_geburtsdatum", "Geburtsdatum Kontoinhaber", _scoped_date(KONTOINHABER_ANCHOR, "Geburtsdatum")),
+    ("kontoinhaber_strasse", "Straße, Hausnummer Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "Straße, Hausnummer", TEXT)),
+    ("kontoinhaber_plz_ort", "PLZ, Ort Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "PLZ, Ort", TEXT)),
     ("kontoinhaber_kreditinstitut", "Name des Kreditinstituts", _label("Name des Kreditinstituts", TEXT, "Kreditinstitut")),
     ("kontoinhaber_iban", "IBAN Kontoinhaber", _label("IBAN", r"[A-Z]{2}\s?[A-Z0-9 ]{12,30}")),
 ]

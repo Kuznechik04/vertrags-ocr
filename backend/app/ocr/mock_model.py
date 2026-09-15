@@ -215,17 +215,27 @@ def _fold_umlauts(text: str) -> str:
 
 def _pattern_anchor_prefix(pattern: str) -> str:
     """Liefert den Teil eines Patterns VOR der ersten nicht-escapten
-    öffnenden Klammer (= der "Anker"-Teil vor der Werte-Capture-Gruppe).
+    öffnenden Klammer der Werte-Capture-Gruppe (= der "Anker"-Teil davor).
     Jedes Pattern in diesem System hat laut Konvention genau eine
     Capture-Gruppe für den Wert (siehe `match.span(1)` in
     `_match_field_in_pages`) – alles davor ist der Suchbegriff/Kontext, der
-    unabhängig vom eigentlichen Wert geprüft werden kann."""
+    unabhängig vom eigentlichen Wert geprüft werden kann.
+
+    Eine `(` allein reicht dafür nicht als Erkennungsmerkmal: Abschnitts-
+    gescopte Muster (siehe `_scoped_label` in mlp_template.py) enthalten VOR
+    der eigentlichen Werte-Gruppe zusätzlich eine nicht-capturing Gruppe
+    `(?:...)` für den Kontext-Anker - "(?" wird daher übersprungen statt als
+    Gruppenstart gewertet, sonst würde der Anker-Nachweis in Stufe 2 nur den
+    (oft leeren) Teil vor dieser nicht-capturing Gruppe prüfen."""
     i = 0
     while i < len(pattern):
         if pattern[i] == "\\":
             i += 2
             continue
         if pattern[i] == "(":
+            if pattern[i + 1 : i + 2] == "?":
+                i += 2
+                continue
             return pattern[:i]
         i += 1
     return pattern  # keine Gruppe gefunden (Sonderfall bei frei getipptem Regex)
@@ -620,7 +630,19 @@ class MockOCRModel(BaseOCRModel):
                     continue
 
                 try:
-                    match = re.search(pattern, joined_lower, flags=re.IGNORECASE)
+                    # DOTALL zusätzlich zu IGNORECASE: manche Muster (siehe
+                    # `_scoped_label` in mlp_template.py) verlangen bewusst
+                    # einen Kontext-Anker VOR dem eigentlichen Label (z.B.
+                    # "Gibt es einen abweichenden Kontoinhaber? ... Name"), um
+                    # ein generisches Label wie "Name" nicht versehentlich auf
+                    # den gleichnamigen Wert eines anderen Formularabschnitts
+                    # matchen zu lassen. Ohne DOTALL würde das dazwischen
+                    # liegende `.*?` an jedem Zeilenumbruch ("\n" zwischen
+                    # Formularzeilen, siehe oben) abbrechen. Alle bestehenden
+                    # Wert-Muster grenzen sich ohnehin explizit über `[^\n...]`
+                    # statt über das implizite "kein Zeilenumbruch"-Verhalten
+                    # von `.` ab, DOTALL ändert also nichts an deren Reichweite.
+                    match = re.search(pattern, joined_lower, flags=re.IGNORECASE | re.DOTALL)
                     if not match:
                         # Fallback: OCR lässt Umlaut-Punkte bei manchen
                         # Scans/Schriftarten weg (siehe _fold_umlauts) - erst
@@ -630,7 +652,9 @@ class MockOCRModel(BaseOCRModel):
                         # gegenüber `spans`/`joined_text` (unverändert, ohne
                         # Faltung) gültig.
                         match = re.search(
-                            _fold_umlauts(pattern), _fold_umlauts(joined_lower), flags=re.IGNORECASE
+                            _fold_umlauts(pattern),
+                            _fold_umlauts(joined_lower),
+                            flags=re.IGNORECASE | re.DOTALL,
                         )
                 except re.error:
                     # Frei getipptes Admin-Regex kann syntaktisch kaputt sein
@@ -704,8 +728,8 @@ class MockOCRModel(BaseOCRModel):
                 if not anchor:
                     continue
                 try:
-                    found = re.search(anchor, joined_lower, flags=re.IGNORECASE) or re.search(
-                        _fold_umlauts(anchor), _fold_umlauts(joined_lower), flags=re.IGNORECASE
+                    found = re.search(anchor, joined_lower, flags=re.IGNORECASE | re.DOTALL) or re.search(
+                        _fold_umlauts(anchor), _fold_umlauts(joined_lower), flags=re.IGNORECASE | re.DOTALL
                     )
                     if found:
                         return FieldMatch(value=None, confidence=0.0, page=1, bbox=None, match_status="data_not_found")

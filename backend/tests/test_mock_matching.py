@@ -2,6 +2,7 @@
 HTTP-API zu gehen - schneller und präziser für die Matching-/Scoring-Logik
 selbst (Kandidaten-Sammlung, Mehrdeutigkeits-Erkennung, re.error-Robustheit)."""
 from app.ocr.mock_model import MockOCRModel, PageData, Word
+from app.ocr.mlp_template import KONTOINHABER_ANCHOR, YES_NO, _escape_label, _scoped_label
 
 
 def _word(text: str, x0: float, top: float) -> Word:
@@ -90,3 +91,49 @@ def test_umlaut_dropped_by_ocr_still_matches_anchor():
 
     assert match.match_status == "matched"
     assert match.value == "3 monate"
+
+
+def test_multiline_label_still_matches():
+    """Regression-Guard für MLP-Checkbox-Fragen: lange Labels (z.B.
+    "Absicherung der groben Fahrlässigkeit bis 20.000 EUR?") brechen im
+    echten Formular oft über eine Zeile um. Vorher zerbrach das Matching
+    daran, weil der Anker literale Leerzeichen statt `\\s+` nutzte (siehe
+    `_escape_label` in mlp_template.py)."""
+    model = MockOCRModel()
+    line1 = [_word("Absicherung", 0.1, 0.10), _word("der", 0.22, 0.10), _word("groben", 0.27, 0.10)]
+    line2 = [_word("Fahrlässigkeit", 0.1, 0.12), _word("bis", 0.2, 0.12), _word("20.000", 0.25, 0.12), _word("EUR?", 0.35, 0.12), _word("Ja", 0.42, 0.12)]
+    page = PageData(lines=[line1, line2])
+
+    pattern = rf"{_escape_label('Absicherung der groben Fahrlässigkeit bis 20.000 EUR?')}\s*:?\s*({YES_NO})"
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "Ja"
+
+
+def test_kontoinhaber_section_does_not_pick_up_antragsteller_value():
+    """Regression-Guard für die Label-Kollision zwischen Antragsteller- und
+    Kontoinhaber-Abschnitt: beide nutzen im MLP-Formular die generische
+    Beschriftung "Name". Ohne Sektions-Scoping (siehe `_scoped_label` in
+    mlp_template.py) hätte das Kontoinhaber-Feld fälschlich den Namen des
+    Antragstellers übernommen, weil beide Muster sonst identisch aussehen
+    und `_match_field_in_pages` ohne Kontext einfach den frühesten Treffer
+    nimmt."""
+    model = MockOCRModel()
+    antragsteller_page = _page([_word("Name:", 0.1, 0.1), _word("Max", 0.2, 0.1), _word("Mustermann", 0.3, 0.1)])
+    kontoinhaber_page = PageData(
+        lines=[
+            [
+                _word("Gibt", 0.1, 0.05), _word("es", 0.15, 0.05), _word("einen", 0.2, 0.05),
+                _word("abweichenden", 0.25, 0.05), _word("Kontoinhaber?", 0.35, 0.05), _word("Ja", 0.45, 0.05),
+            ],
+            [_word("Name:", 0.1, 0.1), _word("Erika", 0.2, 0.1), _word("Musterfrau", 0.3, 0.1)],
+        ]
+    )
+    pages = [antragsteller_page, kontoinhaber_page]
+
+    scoped_pattern = _scoped_label(KONTOINHABER_ANCHOR, "Name")[0]
+    match = model._match_field_in_pages([scoped_pattern], pages)
+
+    assert match.match_status == "matched"
+    assert match.value == "Erika Musterfrau"
