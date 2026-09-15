@@ -2,7 +2,14 @@
 HTTP-API zu gehen - schneller und präziser für die Matching-/Scoring-Logik
 selbst (Kandidaten-Sammlung, Mehrdeutigkeits-Erkennung, re.error-Robustheit)."""
 from app.ocr.mock_model import MockOCRModel, PageData, Word
-from app.ocr.mlp_template import KONTOINHABER_ANCHOR, YES_NO, _escape_label, _scoped_label
+from app.ocr.mlp_template import (
+    KONTOINHABER_ANCHOR,
+    YES_NO,
+    _escape_label,
+    _klausel_selbstbeteiligung,
+    _klausel_status,
+    _scoped_label,
+)
 
 
 def _word(text: str, x0: float, top: float) -> Word:
@@ -11,6 +18,24 @@ def _word(text: str, x0: float, top: float) -> Word:
 
 def _page(words: list[Word]) -> PageData:
     return PageData(lines=[words])
+
+
+def _page_from_lines(lines: list[str]) -> PageData:
+    """Baut eine PageData aus mehreren Textzeilen (je ein Wort pro
+    Leerzeichen-getrenntem Token) - fürs Nachbauen längerer, realer
+    Dokumentausschnitte in Tests deutlich lesbarer als einzelne `_word(...)`-
+    Aufrufe."""
+    plines: list[list[Word]] = []
+    for line in lines:
+        x = 0.05
+        words: list[Word] = []
+        for tok in line.split(" "):
+            if not tok:
+                continue
+            words.append(_word(tok, x, 0.1))
+            x += 0.03
+        plines.append(words)
+    return PageData(lines=plines)
 
 
 def test_malformed_pattern_is_skipped_instead_of_crashing():
@@ -111,6 +136,29 @@ def test_multiline_label_still_matches():
     assert match.value == "Ja"
 
 
+def test_question_mark_extracted_as_separate_word_still_matches():
+    """Regression-Guard anhand eines echten MLP-Bauantrag-Transkripts: das
+    abschließende "?" von Checkbox-Fragen wird dort von der Text-Extraktion
+    als EIGENES Wort-Token geliefert ("... gewünscht" + "?" statt
+    "gewünscht?"), obwohl im Formular kein sichtbarer Abstand davor steht.
+    Beim Zusammenfügen der Zeile entsteht daraus ein Leerzeichen vor dem "?",
+    das ein Label mit nur an Wortgrenzen toleriertem Whitespace (frühere
+    Version von `_escape_label`) verfehlt hätte."""
+    model = MockOCRModel()
+    page = _page(
+        [
+            _word("Absicherung", 0.1, 0.1), _word("Bauleistung", 0.2, 0.1),
+            _word("gewünscht", 0.3, 0.1), _word("?", 0.4, 0.1), _word("Ja", 0.42, 0.1),
+        ]
+    )
+    pattern = rf"{_escape_label('Absicherung Bauleistung gewünscht?')}\s*:?\s*({YES_NO})"
+
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "Ja"
+
+
 def test_kontoinhaber_section_does_not_pick_up_antragsteller_value():
     """Regression-Guard für die Label-Kollision zwischen Antragsteller- und
     Kontoinhaber-Abschnitt: beide nutzen im MLP-Formular die generische
@@ -137,3 +185,47 @@ def test_kontoinhaber_section_does_not_pick_up_antragsteller_value():
 
     assert match.match_status == "matched"
     assert match.value == "Erika Musterfrau"
+
+
+# Ausschnitt aus einem echten, erkannten MLP-Bauantrag-Transkript (Leistungs-
+# bausteine/Selbstbeteiligungen-Block) - Grundlage für die folgenden Tests.
+_LEISTUNGSBAUSTEINE_TRANSKRIPT = [
+    "- Mitversicherung von Altbauten gegen Sachschäden infolge eines Schadens an der Neubauleistung Nein",
+    "sowie infolge Leitungswasser, Sturm/ Hagel (Klausel T590080k)",
+    "- Altbauten gegen Sachschäden gem. Klausel T590081k 10% mind. 2.500 EUR",
+    "- Mitversicherung von aufwendiger Ausstattung/ Bestandteile von unverhältnismäßig hohem Kunstwert 10% mind. 500 EUR",
+    "gem. Klausel T512807u",
+]
+
+
+def test_klausel_status_handles_value_before_klausel_due_to_line_wrap():
+    """Regression-Guard anhand eines echten MLP-Transkripts: bricht die
+    Beschreibung eines Leistungsbausteins über eine Zeile um (tabellarisches
+    PDF), hängt die Text-Extraktion den Ja/Nein-Status ans Ende der ersten
+    Zeile - VOR den Klausel-Verweis, der erst auf Zeile 2 folgt (siehe
+    `_klausel_status` in mlp_template.py)."""
+    model = MockOCRModel()
+    page = _page_from_lines(_LEISTUNGSBAUSTEINE_TRANSKRIPT)
+
+    match = model._match_field_in_pages(_klausel_status("T590080k"), [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "Nein"
+
+
+def test_klausel_selbstbeteiligung_does_not_grab_value_from_earlier_klausel():
+    """Regression-Guard: eine frühere Version von `_klausel_selbstbeteiligung`
+    erlaubte bis zu 200 Zeichen zwischen Wert und Klausel-Code für den
+    umgebrochenen Fall - das reichte über eine komplette andere
+    Aufzählungszeile hinweg und lieferte fälschlich "10% mind. 2.500 EUR"
+    (gehört zu Klausel T590081k) statt der tatsächlich zu T512807u
+    gehörenden "10% mind. 500 EUR". Das enger gefasste Zeitfenster
+    (`_KLAUSEL_PROXIMITY_WINDOW`) muss den richtigen, nahegelegenen Wert
+    liefern."""
+    model = MockOCRModel()
+    page = _page_from_lines(_LEISTUNGSBAUSTEINE_TRANSKRIPT)
+
+    match = model._match_field_in_pages(_klausel_selbstbeteiligung("T512807u"), [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "10% mind. 500 EUR"

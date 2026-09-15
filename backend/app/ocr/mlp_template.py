@@ -15,18 +15,52 @@ DATE = r"\d{1,2}[./]\d{1,2}[./]\d{2,4}"
 MONEY = r"[\d.]+(?:,\d{1,2})?\s*(?:EUR|€|Euro)?"
 YES_NO = r"(?:ja|nein|yes|no|[xX])"
 TEXT = r"[^\n.]{2,120}"
+# MLP nutzt für Leistungsbausteine ("gewünscht"/"nicht gewünscht") ein
+# anderes Vokabular als für die übrigen Ja/Nein-Fragen ("ja"/"nein") - siehe
+# `_klausel_status` unten, an einem echten Dokument-Transkript verifiziert.
+# "nicht gewünscht" muss vor "gewünscht" stehen, sonst würde die Alternation
+# an der Position von "nicht" scheitern, bevor sie den vollen Ausdruck
+# probiert - `re.search` sucht ohnehin den am weitesten links liegenden
+# Treffer, das ist hier nur zur Klarheit so sortiert.
+STATUS_WORD = r"(?:nicht\s+gewünscht|gewünscht|ja|nein|yes|no|[xX])"
+# Selbstbeteiligungs-Angabe: entweder ein reiner Betrag ("10.000 EUR") oder
+# ein Prozentsatz mit Mindestbetrag ("10% mind. 2.500 EUR") - beide Formen
+# kommen im selben Formularabschnitt vor (siehe `_klausel_selbstbeteiligung`).
+SELBSTBETEILIGUNG = r"(?:\d{1,3}\s*%\s*mind\.?\s*)?[\d.]+(?:,\d{1,2})?\s*(?:EUR|€|Euro)"
+# Max. Zeichen-Distanz für den "Wert steht vor dem Klausel-Code"-Fall in
+# `_klausel_status`/`_klausel_selbstbeteiligung` (Reihenfolge-Umkehr durch
+# Zeilenumbruch, siehe dort). An einem echten Transkript gemessen: legitime
+# Distanzen lagen bei 21 und 57 Zeichen; ein zu großzügiger Wert (200) hat
+# nachweislich den Wert eines GANZ ANDEREN, weiter vorne stehenden
+# Leistungsbausteins aufgegriffen (139 Zeichen entfernt) statt "kein
+# Treffer" zu liefern - 80 deckt die beobachteten Fälle mit Puffer ab, ohne
+# über eine komplette andere Aufzählungszeile hinwegzureichen.
+_KLAUSEL_PROXIMITY_WINDOW = 80
 
 
 def _escape_label(label: str) -> str:
-    """Wie `re.escape`, aber Leerzeichen zwischen Wörtern werden zu `\\s+`
-    statt literalen Leerzeichen. Lange Feldbeschriftungen (v.a. die
-    Checkbox-Fragen unten, z.B. "Absicherung der groben Fahrlässigkeit bis
-    20.000 EUR?") brechen im echten Formular häufig über eine Zeile um - im
-    extrahierten Text wird so ein Umbruch zu "\\n" statt einem Leerzeichen
-    (siehe Zeilentrennung in `mock_model._match_field_in_pages`), ein
-    literales Leerzeichen im Anker würde das Matching dann komplett
-    verfehlen statt nur ungenauer zu werden."""
-    return r"\s+".join(re.escape(word) for word in label.split())
+    """Wie `re.escape`, aber mit `\\s*` ZWISCHEN JEDEM Zeichen statt fixer
+    Leerzeichen an den ursprünglichen Wortgrenzen. Zwei reale Beispiele aus
+    einem tatsächlich erkannten MLP-Bauantrag belegen, warum ein reines
+    Ersetzen der Wortgrenzen (frühere Version dieser Funktion) nicht reicht:
+
+    1. Lange Feldbeschriftungen (v.a. die Checkbox-Fragen unten) brechen im
+       echten Formular häufig über eine Zeile um - im extrahierten Text wird
+       so ein Umbruch zu "\\n" statt einem Leerzeichen (siehe Zeilentrennung
+       in `mock_model._match_field_in_pages`).
+    2. Satzzeichen wie "?" werden von pdfplumber/der OCR oft als eigenes
+       Wort-Token extrahiert, selbst wenn im Originaldokument kein
+       sichtbarer Abstand davor steht - "gewünscht?" im PDF wird beim
+       Zusammenfügen der Zeile zu "gewünscht ?" (siehe Wort-für-Wort-
+       Verkettung in `_group_words_into_lines`/den Extraktionspfaden). Ein
+       Label, das nur an eigenen Wortgrenzen Leerzeichen toleriert, verfehlt
+       genau solche Treffer komplett, weil "gewünscht?" als EIN Token ohne
+       jegliches `\\s` dazwischen erwartet wurde.
+
+    `\\s*` zwischen jedem Einzelzeichen deckt beide Fälle ab, ohne den
+    Anker zu verwässern - die Zeichen müssen weiterhin exakt in dieser
+    Reihenfolge vorkommen, nur mit optionalem Whitespace dazwischen."""
+    return r"\s*".join(re.escape(ch) for ch in label if not ch.isspace())
 
 
 def _label(label: str, value: str = TEXT, *aliases: str) -> list[str]:
@@ -45,6 +79,46 @@ def _date(label: str, *aliases: str) -> list[str]:
 
 def _money(label: str, *aliases: str) -> list[str]:
     return _label(label, MONEY, *aliases)
+
+
+def _klausel_status(klausel_code: str) -> list[str]:
+    """Ja/Nein-artiger Status ("gewünscht"/"nicht gewünscht"/"ja"/"nein") zu
+    einer Klausel im Fließtext einer Aufzählung ("Leistungsbausteine") -
+    KEIN klassisches Label:Wert-Paar. An einem echten MLP-Transkript
+    verifiziert, zwei Fälle je nach Beschreibungslänge:
+
+    1. Kurze Beschreibung (passt auf eine Zeile): Status kommt NACH dem
+       Klausel-Verweis, z.B. "... (Klausel T512805u) nicht gewünscht".
+    2. Lange Beschreibung (bricht im tabellarisch aufgebauten PDF über eine
+       Zeile um): die Text-Extraktion hängt den Status ans Ende der ERSTEN
+       Zeile, der Klausel-Verweis folgt erst in der fortgesetzten
+       Beschreibung auf Zeile 2 - der Status steht hier VOR dem
+       Klausel-Verweis, mit Beschreibungs-Resttext dazwischen, z.B.
+       "... Neubauleistung Nein\\nsowie infolge ... (Klausel T590080k)".
+
+    Der Klausel-Code selbst (z.B. "T590080k") ist als Anker genutzt statt
+    der Beschreibung, weil er im Dokument eindeutig ist. Die Distanz beim
+    "Status-vor-Klausel"-Fall ist bewusst auf ~1 Zeile gedeckelt, damit
+    nicht versehentlich ein Status aus einem komplett anderen
+    Leistungsbaustein aufgegriffen wird."""
+    klausel = re.escape(klausel_code)
+    return [
+        rf"{klausel}\)?\s*({STATUS_WORD})",
+        rf"({STATUS_WORD}).{{0,{_KLAUSEL_PROXIMITY_WINDOW}}}{klausel}",
+    ]
+
+
+def _klausel_selbstbeteiligung(klausel_code: str) -> list[str]:
+    """Wie `_klausel_status`, aber für den "Selbstbeteiligungen"-Abschnitt,
+    in dem statt eines Ja/Nein-Status ein Betrag bzw. eine Prozent-/
+    Mindestbetrags-Angabe zur Klausel steht (siehe `SELBSTBETEILIGUNG`).
+    Gleiche zwei Reihenfolge-Fälle wie dort, aus demselben Transkript
+    verifiziert."""
+    klausel = re.escape(klausel_code)
+    return [
+        rf"{klausel}\)?\s*({SELBSTBETEILIGUNG})",
+        rf"({SELBSTBETEILIGUNG}).{{0,{_KLAUSEL_PROXIMITY_WINDOW}}}{klausel}",
+    ]
 
 
 def _scoped_label(section_anchor: str, label: str, value: str = TEXT, *aliases: str) -> list[str]:
@@ -99,18 +173,18 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("grobe_fahrlaessigkeit_20000", "Absicherung der groben Fahrlässigkeit bis 20.000 EUR?", _checkbox("Absicherung der groben Fahrlässigkeit bis 20.000 EUR?", "grobe Fahrlässigkeit bis 20.000 EUR")),
     ("wetterbedingte_luftbewegungen", "Einschluss außergewöhnlicher wetterbedingter Luftbewegungen", _checkbox("Einschluss außergewöhnlicher wetterbedingter Luftbewegungen")),
     ("feuerrohbau", "Feuerrohbau", _checkbox("Feuerrohbau")),
-    ("altbauten_sachschaeden_t590080k", "Mitversicherung von Altbauten gegen Sachschäden ... (Klausel T590080k)", _checkbox("Klausel T590080k", "T590080k")),
-    ("ausstattung_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert (Klausel T512807u)", _checkbox("Klausel T512807u", "T512807u")),
-    ("altbau_brand_t512805u", "Brand, Blitzschlag, Explosion für den Altbau (Klausel T512805u)", _checkbox("Klausel T512805u", "T512805u")),
-    ("pfahl_brunnen_senkkasten", "Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", _checkbox("Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", "Baugrundverbesserung")),
-    ("baugrubenumschliessung", "Baugrubenumschließung", _checkbox("Baugrubenumschließung")),
-    ("wasserhaltung", "Wasserhaltung", _checkbox("Wasserhaltung")),
-    ("wasserdruckhaltende_dichtung", "Geklebte oder geschweißte wasserdruckhaltende Dichtung", _checkbox("Geklebte oder geschweißte wasserdruckhaltende Dichtung")),
-    ("nachhaftung_6_monate", "Nachhaftung bis 6 Monate gem. Klausel TK5290", _checkbox("Nachhaftung bis 6 Monate gem. Klausel TK5290", "TK5290")),
-    ("altbauten_einsturz_tk5155", "Altbauten gegen Einsturz gem. Klausel TK5155", _checkbox("Altbauten gegen Einsturz gem. Klausel TK5155", "TK5155")),
-    ("altbauten_sachschaeden_t590081k", "Altbauten gegen Sachschäden gem. Klausel T590081k", _checkbox("Altbauten gegen Sachschäden gem. Klausel T590081k", "T590081k")),
-    ("altbauten_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert gem. Klausel T512807u", _checkbox("Aufwendige Ausstattung / Kunstwert gem. Klausel T512807u", "T512807u")),
-    ("altbauten_brand_t512805u", "Brand, Blitzschlag, Explosionsschäden für den Altbau gem. Klausel T512805u", _checkbox("Brand, Blitzschlag, Explosionsschäden für den Altbau gem. Klausel T512805u", "T512805u")),
+    ("altbauten_sachschaeden_t590080k", "Mitversicherung von Altbauten gegen Sachschäden ... (Klausel T590080k)", _klausel_status("T590080k")),
+    ("ausstattung_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert (Klausel T512807u)", _klausel_status("T512807u")),
+    ("altbau_brand_t512805u", "Brand, Blitzschlag, Explosion für den Altbau (Klausel T512805u)", _klausel_status("T512805u")),
+    ("pfahl_brunnen_senkkasten", "Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", _label("Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", SELBSTBETEILIGUNG, "Baugrundverbesserung")),
+    ("baugrubenumschliessung", "Baugrubenumschließung", _label("Baugrubenumschließung", SELBSTBETEILIGUNG)),
+    ("wasserhaltung", "Wasserhaltung", _label("Wasserhaltung", SELBSTBETEILIGUNG)),
+    ("wasserdruckhaltende_dichtung", "Geklebte oder geschweißte wasserdruckhaltende Dichtung", _label("Geklebte oder geschweißte wasserdruckhaltende Dichtung", SELBSTBETEILIGUNG)),
+    ("nachhaftung_6_monate", "Nachhaftung bis 6 Monate gem. Klausel TK5290", _klausel_selbstbeteiligung("TK5290")),
+    ("altbauten_einsturz_tk5155", "Altbauten gegen Einsturz gem. Klausel TK5155", _klausel_selbstbeteiligung("TK5155")),
+    ("altbauten_sachschaeden_t590081k", "Altbauten gegen Sachschäden gem. Klausel T590081k", _klausel_selbstbeteiligung("T590081k")),
+    ("altbauten_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert gem. Klausel T512807u", _klausel_selbstbeteiligung("T512807u")),
+    ("altbauten_brand_t512805u", "Brand, Blitzschlag, Explosionsschäden für den Altbau gem. Klausel T512805u", _klausel_selbstbeteiligung("T512805u")),
     ("art_bauvorhaben", "Art des Bauvorhabens", _label("Art des Bauvorhabens", TEXT, "Bauvorhaben")),
     ("beschreibung", "Beschreibung", _label("Beschreibung", r"[^\n]{2,500}")),
     ("bergbaugebiet", "Liegt das Bauvorhaben in einem Bergbaugebiet?", _checkbox("Liegt das Bauvorhaben in einem Bergbaugebiet?", "Bauvorhaben in einem Bergbaugebiet")),
@@ -121,6 +195,15 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("nettobeitrag_bauherrenhaftpflicht", "Nettobeitrag Bauherrenhaftpflicht", _money("Nettobeitrag Bauherrenhaftpflicht (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag Bauherrenhaftpflicht")),
     ("nettobeitrag_gesamt", "Nettobeitrag", _money("Nettobeitrag (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag gesamt")),
     ("gesamtbeitrag_versicherungssteuer", "Gesamtbeitrag inkl. Versicherungssteuer", _money("Gesamtbeitrag inkl. Versicherungssteuer")),
+    ("grundselbstbeteiligung", "Grundselbstbeteiligung", _label("Grundselbstbeteiligung", SELBSTBETEILIGUNG)),
+    ("absicherung_bauherrenhaftpflicht", "Absicherung der Bauherrenhaftpflicht", _label("Absicherung der Bauherrenhaftpflicht", STATUS_WORD)),
+    # Eigenständiges Feld statt `_label("Selbstbeteiligung", ...)`: "Grund-
+    # selbstbeteiligung" (siehe oben) enthält "Selbstbeteiligung" als
+    # Teilstring OHNE Wortgrenze davor (zusammengeschriebenes Wort) - ein
+    # einfacher Label-Anker würde dort versehentlich hineinmatchen. Negative
+    # Lookbehind schließt genau diesen Fall aus (Matching läuft auf bereits
+    # kleingeschriebenem Text, siehe `joined_lower` in `mock_model.py`).
+    ("selbstbeteiligung_bauherrenhaftpflicht", "Selbstbeteiligung Bauherrenhaftpflicht", [rf"(?<!grund)selbstbeteiligung\s*:?\s*({SELBSTBETEILIGUNG})"]),
     ("versicherungsort", "Versicherungsort/ Risikoort", _label("Versicherungsort/ Risikoort", TEXT, "Versicherungsort", "Risikoort")),
     ("risikoort_strasse_hausnummer", "Straße u. Haus-Nr. (Risikoort)", _scoped_label(RISIKOORT_ANCHOR, "Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer")),
     ("risikoort_plz", "PLZ Risikoort", _label("PLZ Risikoort", r"\d{5}", "PLZ des Risikoorts")),
