@@ -1,6 +1,6 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+from app.schemas._common import UtcDatetime
 
 
 class UserCreate(BaseModel):
@@ -14,7 +14,7 @@ class UserOut(BaseModel):
     id: str
     email: str
     role: str
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class Token(BaseModel):

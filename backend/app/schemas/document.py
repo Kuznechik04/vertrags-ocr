@@ -1,6 +1,6 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas._common import UtcDatetime
 
 
 class FieldOut(BaseModel):
@@ -53,8 +53,8 @@ class DocumentOut(BaseModel):
     content_type: str
     status: str
     page_count: int
-    uploaded_at: datetime
-    reviewed_at: datetime | None
+    uploaded_at: UtcDatetime
+    reviewed_at: UtcDatetime | None
     error_message: str | None
 
 
