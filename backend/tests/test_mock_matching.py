@@ -12,6 +12,7 @@ from app.ocr.mlp_template import (
     _klausel_selbstbeteiligung,
     _klausel_status,
     _label_nearby,
+    _label_until,
     _SAME_LINE_SEP,
     _scoped_label,
 )
@@ -378,3 +379,46 @@ def test_scoped_kontoinhaber_iban_ignores_earlier_company_iban():
 
     assert match.match_status == "matched"
     assert match.value == "DE77 1203 0000 1063 0763 58"
+
+
+def test_label_until_captures_multiline_value_up_to_next_field():
+    """Regression-Guard: "Beschreibung" ist im echten MLP-Dokument kein
+    einzeiliges Feld, sondern geht über viele Zeilen/Absätze (Maßnahmen-
+    Tabelle, Anmerkungen, Unterschriftenblock), bevor das nächste
+    Formularfeld ("Liegt das Bauvorhaben in einem Bergbaugebiet?")
+    beginnt. `_label(..., r"[^\\n]{2,500}")` hätte nach der ersten Zeile
+    abgebrochen."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Beschreibung Sanierungsaufwände Verkehrsstr. 19",
+            "Erste Zeile Inhalt",
+            "Zweite Zeile Inhalt",
+            "Liegt das Bauvorhaben in einem Bergbaugebiet ? Nein",
+        ]
+    )
+
+    pattern = _label_until("Beschreibung", "Liegt das Bauvorhaben in einem Bergbaugebiet?")[0]
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "Sanierungsaufwände Verkehrsstr. 19\nErste Zeile Inhalt\nZweite Zeile Inhalt"
+
+
+def test_label_until_reports_no_value_when_empty():
+    """Regression-Guard: steht das nächste Feld direkt nach dem Label (kein
+    Inhalt dazwischen), muss das als "kein Wert gefunden" erkannt werden -
+    nicht als leerer, aber "matched" Treffer."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Beschreibung",
+            "Liegt das Bauvorhaben in einem Bergbaugebiet ? Nein",
+        ]
+    )
+
+    pattern = _label_until("Beschreibung", "Liegt das Bauvorhaben in einem Bergbaugebiet?")[0]
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "data_not_found"
+    assert match.value is None

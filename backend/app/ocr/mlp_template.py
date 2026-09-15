@@ -137,6 +137,29 @@ def _label_nearby(label: str, value: str) -> str:
     return rf"{_escape_label(label)}.{{0,{_KLAUSEL_PROXIMITY_WINDOW}}}?({value})"
 
 
+def _label_until(label: str, until_anchor: str, max_len: int = 3000) -> list[str]:
+    """Erfasst mehrzeiligen Freitext ab `label` bis (ausschließlich) zum
+    nächsten bekannten Feld-Label `until_anchor` - anders als `_label` mit
+    `TEXT`/`r"[^\\n]{2,500}"`, das nach der ersten Zeile abbricht.
+
+    Für Freitext-Felder wie "Beschreibung", deren Wert im echten Dokument
+    über viele Zeilen/Absätze geht (z.B. eine Maßnahmen-Tabelle,
+    Anmerkungen, ein Unterschriftenblock), bevor das nächste Formularfeld
+    beginnt - an einem echten Dokument nachgewiesen: der Beschreibungstext
+    war dort >1000 Zeichen lang. `[\\s\\S]` statt `.`, damit es unabhängig
+    vom global gesetzten `re.DOTALL` (siehe `mock_model._match_field_in_pages`)
+    explizit über Zeilenumbrüche hinweg matcht.
+
+    Nicht-gierig (`{0,max_len}?`) und mit Lookahead auf `until_anchor` statt
+    fixer Länge: verhindert sowohl "verschluckt zu viel" (würde sonst bis
+    zum allerletzten Vorkommen von `until_anchor` im Dokument greifen) als
+    auch "verschluckt zu wenig". Ein LEERER Wert (Label direkt gefolgt vom
+    nächsten Feld, ohne Inhalt dazwischen) matcht ebenfalls - wird von
+    `_match_field_in_pages` dann korrekt als "kein Wert" behandelt (leere
+    Strings werden dort verworfen), nicht als Fehler."""
+    return [rf"{_escape_label(label)}\s*:?\s*([\s\S]{{0,{max_len}}}?)(?=\s*{_escape_label(until_anchor)})"]
+
+
 def _klausel_status(klausel_code: str) -> list[str]:
     """Ja/Nein-artiger Status ("gewünscht"/"nicht gewünscht"/"ja"/"nein") zu
     einer Klausel im Fließtext einer Aufzählung ("Leistungsbausteine") -
@@ -261,13 +284,23 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("baugrubenumschliessung", "Baugrubenumschließung", _label("Baugrubenumschließung", SELBSTBETEILIGUNG)),
     ("wasserhaltung", "Wasserhaltung", _label("Wasserhaltung", SELBSTBETEILIGUNG)),
     ("wasserdruckhaltende_dichtung", "Geklebte oder geschweißte wasserdruckhaltende Dichtung", _label("Geklebte oder geschweißte wasserdruckhaltende Dichtung", SELBSTBETEILIGUNG)),
+    # Steht im Dokument direkt vor den übrigen Selbstbeteiligungs-Feldern
+    # ("Mit folgenden Selbstbeteiligungen: - Grundselbstbeteiligung ... -
+    # Nachhaftung ... - Altbauten gegen Einsturz ...") - gehört daher hier
+    # hin statt weiter unten bei Bauherrenhaftpflicht/Versicherungsort.
+    ("grundselbstbeteiligung", "Grundselbstbeteiligung", _label("Grundselbstbeteiligung", SELBSTBETEILIGUNG)),
     ("nachhaftung_6_monate", "Nachhaftung bis 6 Monate gem. Klausel TK5290", _klausel_selbstbeteiligung("TK5290")),
     ("altbauten_einsturz_tk5155", "Altbauten gegen Einsturz gem. Klausel TK5155", _klausel_selbstbeteiligung("TK5155")),
     ("altbauten_sachschaeden_t590081k", "Altbauten gegen Sachschäden gem. Klausel T590081k", _klausel_selbstbeteiligung("T590081k")),
     ("altbauten_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert gem. Klausel T512807u", _klausel_selbstbeteiligung("T512807u")),
     ("altbauten_brand_t512805u", "Brand, Blitzschlag, Explosionsschäden für den Altbau gem. Klausel T512805u", _klausel_selbstbeteiligung("T512805u")),
     ("art_bauvorhaben", "Art des Bauvorhabens", _label("Art des Bauvorhabens", TEXT, "Bauvorhaben")),
-    ("beschreibung", "Beschreibung", _label("Beschreibung", r"[^\n]{2,500}")),
+    # _label_until zuerst (mehrzeilig bis zum nächsten Feld "Liegt das
+    # Bauvorhaben in einem Bergbaugebiet?" - an einem echten Dokument war
+    # der Beschreibungstext >1000 Zeichen lang, u.a. eine Maßnahmen-Tabelle
+    # und ein Unterschriftenblock). Alte einzeilige Variante als Fallback,
+    # falls "Bergbaugebiet" mal nicht auf derselben Seite folgt.
+    ("beschreibung", "Beschreibung", _label_until("Beschreibung", "Liegt das Bauvorhaben in einem Bergbaugebiet?") + _label("Beschreibung", r"[^\n]{2,500}")),
     ("bergbaugebiet", "Liegt das Bauvorhaben in einem Bergbaugebiet?", _checkbox("Liegt das Bauvorhaben in einem Bergbaugebiet?", "Bauvorhaben in einem Bergbaugebiet")),
     ("feuergefaehrliche_nachbarbetriebe", "Gefahrerhöhung durch feuergefährliche Nachbarbetriebe", _checkbox("Gefahrerhöhung durch feuergefährliche Nachbarbetriebe")),
     # Zusätzliches Muster: im echten Dokument bricht diese lange Frage über
@@ -288,7 +321,6 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("nettobeitrag_bauherrenhaftpflicht", "Nettobeitrag Bauherrenhaftpflicht", _money("Nettobeitrag Bauherrenhaftpflicht (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag Bauherrenhaftpflicht") + [_label_nearby("Nettobeitrag Bauherrenhaftpflicht", MONEY)]),
     ("nettobeitrag_gesamt", "Nettobeitrag", _money("Nettobeitrag (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag gesamt")),
     ("gesamtbeitrag_versicherungssteuer", "Gesamtbeitrag inkl. Versicherungssteuer", _money("Gesamtbeitrag inkl. Versicherungssteuer")),
-    ("grundselbstbeteiligung", "Grundselbstbeteiligung", _label("Grundselbstbeteiligung", SELBSTBETEILIGUNG)),
     ("absicherung_bauherrenhaftpflicht", "Absicherung der Bauherrenhaftpflicht", _label("Absicherung der Bauherrenhaftpflicht", STATUS_WORD)),
     # Eigenständiges Feld statt `_label("Selbstbeteiligung", ...)`: "Grund-
     # selbstbeteiligung" (siehe oben) enthält "Selbstbeteiligung" als
