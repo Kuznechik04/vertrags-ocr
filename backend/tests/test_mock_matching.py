@@ -10,6 +10,7 @@ from app.ocr.mlp_template import (
     YES_NO,
     _checkbox_robust,
     _escape_label,
+    _label,
     _money_robust,
     _klausel_selbstbeteiligung,
     _klausel_status,
@@ -493,3 +494,49 @@ def test_money_robust_does_not_collide_with_similarly_prefixed_field():
 
     assert match.match_status == "matched"
     assert match.value == "435,80 EUR"
+
+
+def test_yes_no_nearby_search_ignores_x_inside_unrelated_word():
+    """Regression-Guard anhand eines echten, gescannten MLP-Dokuments: die
+    `_label_nearby`-Umkreissuche (siehe `_klausel_status`) griff fälschlich
+    das "x" MITTEN in "Explosion" als Ja/Nein-artigen Wert auf, weil
+    `[xX]` als bloßes Zeichen ÜBERALL im durchsuchten Fenster matcht - auch
+    innerhalb eines völlig unbeteiligten Wortes. Bei einem direkt
+    angrenzenden Label:Wert-Muster (`_SAME_LINE_SEP`) wäre das nie
+    aufgefallen; erst die offene Umkreissuche macht die fehlende
+    Wortgrenze zum echten Problem. `\\b` um die Alternation muss das
+    ausschließen."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Einschluss Brand, Blitzschlag, Explosion fur den Altbau (Klausel T512805u)",
+            "nicht gewinscht",
+        ]
+    )
+
+    match = model._match_field_in_pages(_klausel_status("T512805u"), [page])
+
+    assert match.value != "x"
+    assert match.match_status in ("data_not_found", "field_not_found")
+
+
+def test_versicherungsort_alias_does_not_match_its_own_label_suffix():
+    """Regression-Guard anhand eines echten, gescannten MLP-Dokuments: der
+    frühere Alias "Versicherungsort" (ohne "/ Risikoort") ist ein reines
+    Präfix des primären Labels "Versicherungsort/ Risikoort" - er matchte
+    sich dadurch selbst und fing den REST des eigenen Labels ("/
+    Risikoort") als vermeintlichen Wert ein, obwohl der tatsächliche Wert
+    ("abweichende Anschrift") auf der nächsten Zeile stand."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Versicherungsort/ Risikoort",
+            "abweichende Anschrift",
+        ]
+    )
+
+    pattern = _label("Versicherungsort/ Risikoort", TEXT, "Risikoort")
+    match = model._match_field_in_pages(pattern, [page])
+
+    assert match.value != "/ Risikoort"
+    assert match.match_status == "data_not_found"

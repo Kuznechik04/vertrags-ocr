@@ -13,7 +13,17 @@ RELEVANT_PAGE_COUNT = 8
 
 DATE = r"\d{1,2}[./]\d{1,2}[./]\d{2,4}"
 MONEY = r"[\d.]+(?:,\d{1,2})?\s*(?:EUR|€|Euro)?"
-YES_NO = r"(?:ja|nein|yes|no|[xX])"
+# \b (Wortgrenze) um die ganze Alternation, NICHT nur `[xX]` als bloßes
+# Zeichen: an einem echten Dokument nachgewiesen, dass die `_label_nearby`-
+# Umkreissuche (siehe `_robust` unten) sonst jedes "x" INNERHALB eines
+# Wortes aufgreift - "Explosion" enthält ein "x" und lag zufällig nahe
+# genug an einem Klausel-Code, wodurch ein Ja/Nein-Feld fälschlich den
+# Wert "x" bekam. Bei einem direkt angrenzenden Label:Wert-Muster
+# (`_SAME_LINE_SEP`) wäre das nie aufgefallen, weil dort ohnehin nur der
+# Text direkt nach dem Label infrage kommt - erst bei einer offenen
+# Umkreissuche über beliebigen Text wird die fehlende Wortgrenze zum
+# echten Problem.
+YES_NO = r"\b(?:ja|nein|yes|no|x)\b"
 # Punkt im Wert nur dann durchlassen, wenn danach (ggf. nach Whitespace)
 # eine Ziffer folgt - typisch für Abkürzungen wie "Str." oder "Nr." vor
 # einer Hausnummer. WICHTIG: das Matching läuft gegen den BEREITS
@@ -34,7 +44,7 @@ TEXT = r"(?:[^\n.]|\.(?=\s*\d)){2,120}"
 # an der Position von "nicht" scheitern, bevor sie den vollen Ausdruck
 # probiert - `re.search` sucht ohnehin den am weitesten links liegenden
 # Treffer, das ist hier nur zur Klarheit so sortiert.
-STATUS_WORD = r"(?:nicht\s+gewünscht|gewünscht|ja|nein|yes|no|[xX])"
+STATUS_WORD = r"\b(?:nicht\s+gewünscht|gewünscht|ja|nein|yes|no|x)\b"
 # Selbstbeteiligungs-Angabe: entweder ein reiner Betrag ("10.000 EUR") oder
 # ein Prozentsatz mit Mindestbetrag ("10% mind. 2.500 EUR") - beide Formen
 # kommen im selben Formularabschnitt vor (siehe `_klausel_selbstbeteiligung`).
@@ -295,9 +305,13 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     # 01.07.2028" ab (ein Formularfeld für beide Daten statt zweier
     # getrennter Labels) - die ursprünglichen `_date(...)`-Muster bleiben
     # als Fallback für Dokumentvarianten mit getrennten Labels erhalten.
-    ("versicherungsbeginn", "Versicherungsbeginn", _date("Versicherungsbeginn", "Versicherungsbeginn ab", "Beginn der Versicherung") + [rf"versicherungsbeginn\s*/\s*-?ablauf[ \t]*:?[ \t]*({DATE})"]),
-    ("versicherungsablauf", "Versicherungsablauf", _date("Versicherungsablauf", "Versicherungsende", "Ablauf der Versicherung") + [rf"versicherungsbeginn\s*/\s*-?ablauf[ \t]*:?[ \t]*{DATE}[ \t]*bis[ \t]*({DATE})"]),
-    ("vertragslaufzeit_jahre", "Vertragslaufzeit in Jahren", _label("Vertragslaufzeit in Jahren", r"\d{1,2}", "Vertragslaufzeit", "Laufzeit")),
+    # "[/1]" statt reinem "/": an einem echten gescannten Dokument
+    # nachgewiesen, dass docTR den Schrägstrich in "Versicherungsbeginn /
+    # -ablauf" als Ziffer "1" liest ("Versicherungsbeginn 1 -ablauf") -
+    # optische Ähnlichkeit von "/" und "1" bei niedrig aufgelösten Scans.
+    ("versicherungsbeginn", "Versicherungsbeginn", _date("Versicherungsbeginn", "Versicherungsbeginn ab", "Beginn der Versicherung") + [rf"versicherungsbeginn\s*[/1]\s*-?ablauf[ \t]*:?[ \t]*({DATE})"]),
+    ("versicherungsablauf", "Versicherungsablauf", _date("Versicherungsablauf", "Versicherungsende", "Ablauf der Versicherung") + [rf"versicherungsbeginn\s*[/1]\s*-?ablauf[ \t]*:?[ \t]*{DATE}[ \t]*bis[ \t]*({DATE})"]),
+    ("vertragslaufzeit_jahre", "Vertragslaufzeit in Jahren", _robust(_label("Vertragslaufzeit in Jahren", r"\d{1,2}", "Vertragslaufzeit", "Laufzeit"), "Vertragslaufzeit in Jahren", r"\d{1,2}")),
     ("bruttobeitrag", "Bruttobeitrag inkl. Versicherungssteuer", _money_robust("Bruttobeitrag inkl. Versicherungssteuer", "Bruttobeitrag", "Gesamtbeitrag inkl. Versicherungssteuer")),
     ("versicherungssumme", "Versicherungs-/ Bausumme", _money_robust("Versicherungs-/ Bausumme", "Versicherungs-/Bausumme", "Bausumme", "Versicherungssumme")),
     ("vorsteuerabzugsberechtigt", "Vorsteuerabzugsberechtigt", _checkbox_robust("Vorsteuerabzugsberechtigt")),
@@ -358,10 +372,23 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     # Lookbehind schließt genau diesen Fall aus (Matching läuft auf bereits
     # kleingeschriebenem Text, siehe `joined_lower` in `mock_model.py`).
     ("selbstbeteiligung_bauherrenhaftpflicht", "Selbstbeteiligung Bauherrenhaftpflicht", [rf"(?<!grund)selbstbeteiligung\s*:?\s*({SELBSTBETEILIGUNG})"]),
-    ("versicherungsort", "Versicherungsort/ Risikoort", _label("Versicherungsort/ Risikoort", TEXT, "Versicherungsort", "Risikoort")),
+    # Alias "Versicherungsort" (ohne "/ Risikoort") entfernt: er ist ein
+    # reines Präfix des primären Labels "Versicherungsort/ Risikoort" - an
+    # einem echten Dokument nachgewiesen, dass er sich dadurch selbst
+    # trifft und den REST des eigenen Labels ("/ Risikoort") als Wert
+    # einfängt, statt der tatsächlichen Antwort. "Risikoort" allein bleibt
+    # als Alias, da es kein Präfix-Teilstring des primären Labels ist.
+    ("versicherungsort", "Versicherungsort/ Risikoort", _label("Versicherungsort/ Risikoort", TEXT, "Risikoort")),
     ("risikoort_strasse_hausnummer", "Straße u. Haus-Nr. (Risikoort)", _scoped_label(RISIKOORT_ANCHOR, "Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer")),
     ("risikoort_plz", "PLZ Risikoort", _label("PLZ Risikoort", r"\d{5}", "PLZ des Risikoorts")),
-    ("vorversicherung", "Vorversicherung vorhanden?", _checkbox_robust("Vorversicherung vorhanden?")),
+    # Zusätzliches _label_nearby-Fallback explizit auf den KÜRZEREN Anker
+    # "Vorversicherung" (nicht die volle Phrase wie bei `_checkbox_robust`
+    # sonst üblich): an einem echten Dokument nachgewiesen, dass "vorhanden"
+    # von der OCR bis zur Unkenntlichkeit verstümmelt wird (z.B.
+    # "Vorversicherung,.vrhanden ?") - ein Fallback auf die volle Phrase
+    # würde dort ebenfalls nie treffen, "Vorversicherung" allein (im
+    # Dokument eindeutig) schon.
+    ("vorversicherung", "Vorversicherung vorhanden?", _checkbox("Vorversicherung vorhanden?") + [_label_nearby("Vorversicherung", YES_NO)]),
     ("antrag_abgelehnt", "Ähnlicher Antrag abgelehnt?", _checkbox_robust("Ist bereits ein ähnlicher Antrag abgelehnt worden?", "ähnlicher Antrag abgelehnt")),
     ("schaeden_letzte_5_jahre", "Schäden in den letzten 5 Jahren", _checkbox_robust("Waren Sie in den letzten 5 Jahren von Schäden betroffen?", "Schäden in den letzten 5 Jahren")),
     ("besondere_hinweise", "Besondere Hinweise und Vereinbarungen", _label("Besondere Hinweise und Vereinbarungen", r"[^\n]{2,500}")),
