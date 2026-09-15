@@ -320,15 +320,31 @@ body {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
+/* Feste (nicht nur maximale) Höhe, damit die Feldliste rechts daneben exakt
+   gleich hoch gemacht werden kann (siehe .field-list-panel) - erst dadurch
+   lassen sich PDF und Felder bei vielen Feldern (z.B. MLP-Formulare mit 55
+   Feldern) sinnvoll nebeneinander vergleichen, statt dass die Feldliste die
+   Seite beliebig in die Länge zieht. */
 .pdf-scroll,
 .image-viewer-scroll {
   position: relative;
   width: 100%;
-  max-height: 80vh;
+  height: 80vh;
   overflow-y: auto;
   border-radius: 8px;
   background: #ececec;
   padding: 12px;
+}
+
+/* Pendant zu .document-preview: gleicher zweistufiger Aufbau (äußere Karte
+   ohne feste Höhe + innerer Scrollbereich mit 80vh, siehe .field-list
+   unten) - damit beide Spalten in .review-body exakt gleich hoch werden,
+   nicht nur ungefähr. */
+.field-list-panel {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .pdf-page-wrapper {
@@ -401,10 +417,18 @@ body {
   color: var(--muted);
 }
 
+/* height (nicht max-height) + eigener Scrollbereich, analog zu .pdf-scroll/
+   .image-viewer-scroll innerhalb von .document-preview - erst dadurch ist
+   die Feldliste bei vielen Feldern (z.B. 55 bei MLP-Formularen) exakt so
+   groß wie der PDF-Container daneben, statt die Seite beliebig in die
+   Länge zu ziehen. */
 .field-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  height: 80vh;
+  overflow-y: auto;
+  padding-right: 4px; /* Platz für die Scrollbar, damit sie nicht auf den Feld-Karten liegt */
 }
 
 .field-row {

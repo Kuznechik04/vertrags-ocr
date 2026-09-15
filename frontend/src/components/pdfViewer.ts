@@ -149,8 +149,19 @@ export function createPdfViewer(
         dragRect.style.display = "none";
 
         const canvas = document.createElement("canvas");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
+        // Canvas-Pixelpuffer in tatsächlichen GERÄTE-Pixeln rendern (auf
+        // Retina/HiDPI-Displays mehr als CSS-Pixel), CSS-Anzeigegröße aber
+        // weiterhin in CSS-Pixeln (viewport.width/height) - sonst würde das
+        // Bild auf hochauflösenden Displays intern hochskaliert und wirkt
+        // unscharf. Gedeckelt auf 2x, weil dieser Viewer ALLE Seiten des
+        // PDFs sofort rendert (auch bei 150-seitigen Dokumenten) - bei 3x-
+        // Displays sonst unnötig viel Speicher/Renderzeit für kaum sichtbaren
+        // Zusatznutzen.
+        const outputScale = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
         canvas.className = "pdf-page-canvas";
 
         const wrapper = h(
@@ -163,7 +174,8 @@ export function createPdfViewer(
 
         const ctx = canvas.getContext("2d");
         if (ctx) {
-          await page.render({ canvasContext: ctx, viewport }).promise;
+          const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
+          await page.render({ canvasContext: ctx, viewport, transform }).promise;
         }
         if (cancelled) return;
 

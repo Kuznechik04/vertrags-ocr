@@ -63,7 +63,8 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
     doc = await api.getDocument(id);
     const fileUrl = await api.fileUrl(id);
     preview = createDocumentPreview(doc, fileUrl, handleDrawComplete);
-    bodySlot.append(preview.el, fieldList.el);
+    const fieldListPanel = h("div", { class: "field-list-panel" }, fieldList.el);
+    bodySlot.append(preview.el, fieldListPanel);
     mount(container, page);
     updateAll();
   }
