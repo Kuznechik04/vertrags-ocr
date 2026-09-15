@@ -197,7 +197,9 @@ class _Candidate:
     bbox: tuple[float, float, float, float]
 
 
-_UMLAUT_FOLD = str.maketrans({"ü": "u", "Ü": "U", "ä": "a", "Ä": "A", "ö": "o", "Ö": "O"})
+_UMLAUT_FOLD = str.maketrans(
+    {"ü": "u", "Ü": "U", "ä": "a", "Ä": "A", "ö": "o", "Ö": "O", "ß": "b", "ẞ": "B"}
+)
 
 
 def _fold_umlauts(text: str) -> str:
@@ -209,7 +211,18 @@ def _fold_umlauts(text: str) -> str:
     "Kündigungsfrist" -> "Kundigungsfrist", "München" -> "Munchen") - ein
     Admin-Suchbegriff mit korrekt geschriebenem Umlaut würde dann nie
     matchen. Nur als Fallback genutzt, wenn die direkte Suche fehlschlägt,
-    damit ein korrekt erkannter Umlaut weiterhin Vorrang hat."""
+    damit ein korrekt erkannter Umlaut weiterhin Vorrang hat.
+
+    ß->b (statt der eigentlich korrekten Transkription "ss", die die Länge
+    verändern würde) deckt einen an einem echten docTR-gescannten Dokument
+    beobachteten, sehr konsistenten Fehler ab: "Einschluß" -> "EinschluB",
+    "geschweißte" -> "geschweiBte", "Baumaßnahmen" -> "BaumaBnahmen" - die
+    OCR liest ß systematisch als großes B. Da hier auf dem bereits
+    kleingeschriebenen Seitentext (`joined_lower`) gematcht wird, faltet
+    "b" zwar nicht zurück auf "B" selbst, aber die Ziel-Abbildung ist
+    trotzdem eindeutig: "ß" im (korrekt geschriebenen) Suchmuster wird zu
+    "b" gefaltet, genau wie das "b", das die OCR bereits anstelle von "ß"
+    geliefert hat - beide Seiten landen also auf demselben Zeichen."""
     return text.translate(_UMLAUT_FOLD)
 
 

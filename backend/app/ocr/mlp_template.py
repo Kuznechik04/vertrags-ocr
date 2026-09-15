@@ -115,6 +115,35 @@ def _money(label: str, *aliases: str) -> list[str]:
     return _label(label, MONEY, *aliases)
 
 
+def _robust(primary: list[str], label: str, value: str) -> list[str]:
+    """Ergänzt ein bereits gebautes Musterset (`_checkbox`/`_label`/...) um
+    ein zusätzliches, NACHRANGIGES `_label_nearby`-Fallback-Muster.
+
+    Grund: An einem echten gescannten MLP-Dokument (OCR-Fallback, docTR)
+    nachgewiesen, dass Label und Wert auf ZWEI GETRENNTEN erkannten Zeilen
+    landen können, obwohl sie im Originalbild in derselben Zeile stehen
+    (z.B. "Pfahl-, ... (10.000 EUR beitragsfrei)" und "10.000 EUR" als
+    zwei separate docTR-Zeilen). `_SAME_LINE_SEP` (siehe dort) verhindert
+    das primäre Muster hier absichtlich am Zeilenumbruch - `_label_nearby`
+    überbrückt das als Fallback.
+
+    Bewusst nur für ENGE Wertetypen (Ja/Nein, Geld, Prozent/Selbst-
+    beteiligung, Status-Wort) genutzt, nie für `TEXT`/Freitext: bei
+    Freitext bestünde wieder das Risiko, das `_SAME_LINE_SEP` ursprünglich
+    beheben sollte (ein leeres Feld greift fälschlich den Text/das Label
+    des nächsten Feldes). Ja/Nein-/Geld-/Prozent-Muster sind eng genug,
+    dass diese Kollision praktisch ausgeschlossen ist."""
+    return primary + [_label_nearby(label, value)]
+
+
+def _checkbox_robust(label: str, *aliases: str) -> list[str]:
+    return _robust(_checkbox(label, *aliases), label, YES_NO)
+
+
+def _money_robust(label: str, *aliases: str) -> list[str]:
+    return _robust(_money(label, *aliases), label, MONEY)
+
+
 def _label_nearby(label: str, value: str) -> str:
     """Sucht `value` irgendwo innerhalb von `_KLAUSEL_PROXIMITY_WINDOW`
     Zeichen NACH `label` - nicht nur direkt angrenzend wie `_label`. Für
@@ -269,26 +298,26 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("versicherungsbeginn", "Versicherungsbeginn", _date("Versicherungsbeginn", "Versicherungsbeginn ab", "Beginn der Versicherung") + [rf"versicherungsbeginn\s*/\s*-?ablauf[ \t]*:?[ \t]*({DATE})"]),
     ("versicherungsablauf", "Versicherungsablauf", _date("Versicherungsablauf", "Versicherungsende", "Ablauf der Versicherung") + [rf"versicherungsbeginn\s*/\s*-?ablauf[ \t]*:?[ \t]*{DATE}[ \t]*bis[ \t]*({DATE})"]),
     ("vertragslaufzeit_jahre", "Vertragslaufzeit in Jahren", _label("Vertragslaufzeit in Jahren", r"\d{1,2}", "Vertragslaufzeit", "Laufzeit")),
-    ("bruttobeitrag", "Bruttobeitrag inkl. Versicherungssteuer", _money("Bruttobeitrag inkl. Versicherungssteuer", "Bruttobeitrag", "Gesamtbeitrag inkl. Versicherungssteuer")),
-    ("versicherungssumme", "Versicherungs-/ Bausumme", _money("Versicherungs-/ Bausumme", "Versicherungs-/Bausumme", "Bausumme", "Versicherungssumme")),
-    ("vorsteuerabzugsberechtigt", "Vorsteuerabzugsberechtigt", _checkbox("Vorsteuerabzugsberechtigt")),
-    ("inkl_umsatzsteuer", "inkl. Umsatzsteuer", _checkbox("inkl. Umsatzsteuer", "inklusive Umsatzsteuer")),
-    ("absicherung_bauleistung", "Absicherung Bauleistung gewünscht?", _checkbox("Absicherung Bauleistung gewünscht?", "Absicherung der Bauleistung gewünscht?")),
-    ("grobe_fahrlaessigkeit_20000", "Absicherung der groben Fahrlässigkeit bis 20.000 EUR?", _checkbox("Absicherung der groben Fahrlässigkeit bis 20.000 EUR?", "grobe Fahrlässigkeit bis 20.000 EUR")),
-    ("wetterbedingte_luftbewegungen", "Einschluss außergewöhnlicher wetterbedingter Luftbewegungen", _checkbox("Einschluss außergewöhnlicher wetterbedingter Luftbewegungen")),
-    ("feuerrohbau", "Feuerrohbau", _checkbox("Feuerrohbau")),
+    ("bruttobeitrag", "Bruttobeitrag inkl. Versicherungssteuer", _money_robust("Bruttobeitrag inkl. Versicherungssteuer", "Bruttobeitrag", "Gesamtbeitrag inkl. Versicherungssteuer")),
+    ("versicherungssumme", "Versicherungs-/ Bausumme", _money_robust("Versicherungs-/ Bausumme", "Versicherungs-/Bausumme", "Bausumme", "Versicherungssumme")),
+    ("vorsteuerabzugsberechtigt", "Vorsteuerabzugsberechtigt", _checkbox_robust("Vorsteuerabzugsberechtigt")),
+    ("inkl_umsatzsteuer", "inkl. Umsatzsteuer", _checkbox_robust("inkl. Umsatzsteuer", "inklusive Umsatzsteuer")),
+    ("absicherung_bauleistung", "Absicherung Bauleistung gewünscht?", _checkbox_robust("Absicherung Bauleistung gewünscht?", "Absicherung der Bauleistung gewünscht?")),
+    ("grobe_fahrlaessigkeit_20000", "Absicherung der groben Fahrlässigkeit bis 20.000 EUR?", _checkbox_robust("Absicherung der groben Fahrlässigkeit bis 20.000 EUR?", "grobe Fahrlässigkeit bis 20.000 EUR")),
+    ("wetterbedingte_luftbewegungen", "Einschluss außergewöhnlicher wetterbedingter Luftbewegungen", _checkbox_robust("Einschluss außergewöhnlicher wetterbedingter Luftbewegungen")),
+    ("feuerrohbau", "Feuerrohbau", _checkbox_robust("Feuerrohbau")),
     ("altbauten_sachschaeden_t590080k", "Mitversicherung von Altbauten gegen Sachschäden ... (Klausel T590080k)", _klausel_status("T590080k")),
     ("ausstattung_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert (Klausel T512807u)", _klausel_status("T512807u")),
     ("altbau_brand_t512805u", "Brand, Blitzschlag, Explosion für den Altbau (Klausel T512805u)", _klausel_status("T512805u")),
-    ("pfahl_brunnen_senkkasten", "Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", _label("Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", SELBSTBETEILIGUNG, "Baugrundverbesserung")),
-    ("baugrubenumschliessung", "Baugrubenumschließung", _label("Baugrubenumschließung", SELBSTBETEILIGUNG)),
-    ("wasserhaltung", "Wasserhaltung", _label("Wasserhaltung", SELBSTBETEILIGUNG)),
-    ("wasserdruckhaltende_dichtung", "Geklebte oder geschweißte wasserdruckhaltende Dichtung", _label("Geklebte oder geschweißte wasserdruckhaltende Dichtung", SELBSTBETEILIGUNG)),
+    ("pfahl_brunnen_senkkasten", "Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", _robust(_label("Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", SELBSTBETEILIGUNG, "Baugrundverbesserung"), "Baugrundverbesserung", SELBSTBETEILIGUNG)),
+    ("baugrubenumschliessung", "Baugrubenumschließung", _robust(_label("Baugrubenumschließung", SELBSTBETEILIGUNG), "Baugrubenumschließung", SELBSTBETEILIGUNG)),
+    ("wasserhaltung", "Wasserhaltung", _robust(_label("Wasserhaltung", SELBSTBETEILIGUNG), "Wasserhaltung", SELBSTBETEILIGUNG)),
+    ("wasserdruckhaltende_dichtung", "Geklebte oder geschweißte wasserdruckhaltende Dichtung", _robust(_label("Geklebte oder geschweißte wasserdruckhaltende Dichtung", SELBSTBETEILIGUNG), "Geklebte oder geschweißte wasserdruckhaltende Dichtung", SELBSTBETEILIGUNG)),
     # Steht im Dokument direkt vor den übrigen Selbstbeteiligungs-Feldern
     # ("Mit folgenden Selbstbeteiligungen: - Grundselbstbeteiligung ... -
     # Nachhaftung ... - Altbauten gegen Einsturz ...") - gehört daher hier
     # hin statt weiter unten bei Bauherrenhaftpflicht/Versicherungsort.
-    ("grundselbstbeteiligung", "Grundselbstbeteiligung", _label("Grundselbstbeteiligung", SELBSTBETEILIGUNG)),
+    ("grundselbstbeteiligung", "Grundselbstbeteiligung", _robust(_label("Grundselbstbeteiligung", SELBSTBETEILIGUNG), "Grundselbstbeteiligung", SELBSTBETEILIGUNG)),
     ("nachhaftung_6_monate", "Nachhaftung bis 6 Monate gem. Klausel TK5290", _klausel_selbstbeteiligung("TK5290")),
     ("altbauten_einsturz_tk5155", "Altbauten gegen Einsturz gem. Klausel TK5155", _klausel_selbstbeteiligung("TK5155")),
     ("altbauten_sachschaeden_t590081k", "Altbauten gegen Sachschäden gem. Klausel T590081k", _klausel_selbstbeteiligung("T590081k")),
@@ -301,8 +330,8 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     # und ein Unterschriftenblock). Alte einzeilige Variante als Fallback,
     # falls "Bergbaugebiet" mal nicht auf derselben Seite folgt.
     ("beschreibung", "Beschreibung", _label_until("Beschreibung", "Liegt das Bauvorhaben in einem Bergbaugebiet?") + _label("Beschreibung", r"[^\n]{2,500}")),
-    ("bergbaugebiet", "Liegt das Bauvorhaben in einem Bergbaugebiet?", _checkbox("Liegt das Bauvorhaben in einem Bergbaugebiet?", "Bauvorhaben in einem Bergbaugebiet")),
-    ("feuergefaehrliche_nachbarbetriebe", "Gefahrerhöhung durch feuergefährliche Nachbarbetriebe", _checkbox("Gefahrerhöhung durch feuergefährliche Nachbarbetriebe")),
+    ("bergbaugebiet", "Liegt das Bauvorhaben in einem Bergbaugebiet?", _checkbox_robust("Liegt das Bauvorhaben in einem Bergbaugebiet?", "Bauvorhaben in einem Bergbaugebiet")),
+    ("feuergefaehrliche_nachbarbetriebe", "Gefahrerhöhung durch feuergefährliche Nachbarbetriebe", _checkbox_robust("Gefahrerhöhung durch feuergefährliche Nachbarbetriebe")),
     # Zusätzliches Muster: im echten Dokument bricht diese lange Frage über
     # eine Zeile um genau zwischen "500.000" und "EUR" - die Text-Extraktion
     # hängt "Nein" dabei mitten hinein ("... über 500.000 Nein\nEUR verbaut
@@ -310,8 +339,8 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     # daher zusätzlich direkt nach der (im Dokument stabilen) Zahl statt nur
     # nach der vollständigen Frage.
     ("solar_anlagen_ueber_500000", "Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR", _checkbox("Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR", "Werden Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR verbaut?") + [_label_nearby("500.000", YES_NO)]),
-    ("denkmalschutz", "Steht das Gebäude unter Denkmalschutz?", _checkbox("Steht das Gebäude unter Denkmalschutz?", "Denkmalschutz")),
-    ("nettobeitrag_bauleistung", "Nettobeitrag Bauleistung", _money("Nettobeitrag Bauleistung (ohne Berücksichtigung der Mindestprämie)", "Nettobeitrag Bauleistung")),
+    ("denkmalschutz", "Steht das Gebäude unter Denkmalschutz?", _checkbox_robust("Steht das Gebäude unter Denkmalschutz?", "Denkmalschutz")),
+    ("nettobeitrag_bauleistung", "Nettobeitrag Bauleistung", _money_robust("Nettobeitrag Bauleistung (ohne Berücksichtigung der Mindestprämie)", "Nettobeitrag Bauleistung")),
     # Zusätzliches Muster: im echten Dokument bricht der Klammer-Zusatz
     # "(unter Berücksichtigung der Mindestprämie)" über eine Zeile um, der
     # Betrag landet dabei MITTEN in der (dadurch über 2 Zeilen offenen)
@@ -319,9 +348,9 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     # EUR\nMindestprämie)") - der einzeilige Klammer-Zusatz in `_SAME_LINE_SEP`
     # deckt das nicht ab, `_label_nearby` schon.
     ("nettobeitrag_bauherrenhaftpflicht", "Nettobeitrag Bauherrenhaftpflicht", _money("Nettobeitrag Bauherrenhaftpflicht (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag Bauherrenhaftpflicht") + [_label_nearby("Nettobeitrag Bauherrenhaftpflicht", MONEY)]),
-    ("nettobeitrag_gesamt", "Nettobeitrag", _money("Nettobeitrag (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag gesamt")),
-    ("gesamtbeitrag_versicherungssteuer", "Gesamtbeitrag inkl. Versicherungssteuer", _money("Gesamtbeitrag inkl. Versicherungssteuer")),
-    ("absicherung_bauherrenhaftpflicht", "Absicherung der Bauherrenhaftpflicht", _label("Absicherung der Bauherrenhaftpflicht", STATUS_WORD)),
+    ("nettobeitrag_gesamt", "Nettobeitrag", _money_robust("Nettobeitrag (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag gesamt")),
+    ("gesamtbeitrag_versicherungssteuer", "Gesamtbeitrag inkl. Versicherungssteuer", _money_robust("Gesamtbeitrag inkl. Versicherungssteuer")),
+    ("absicherung_bauherrenhaftpflicht", "Absicherung der Bauherrenhaftpflicht", _robust(_label("Absicherung der Bauherrenhaftpflicht", STATUS_WORD), "Absicherung der Bauherrenhaftpflicht", STATUS_WORD)),
     # Eigenständiges Feld statt `_label("Selbstbeteiligung", ...)`: "Grund-
     # selbstbeteiligung" (siehe oben) enthält "Selbstbeteiligung" als
     # Teilstring OHNE Wortgrenze davor (zusammengeschriebenes Wort) - ein
@@ -332,17 +361,22 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("versicherungsort", "Versicherungsort/ Risikoort", _label("Versicherungsort/ Risikoort", TEXT, "Versicherungsort", "Risikoort")),
     ("risikoort_strasse_hausnummer", "Straße u. Haus-Nr. (Risikoort)", _scoped_label(RISIKOORT_ANCHOR, "Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer")),
     ("risikoort_plz", "PLZ Risikoort", _label("PLZ Risikoort", r"\d{5}", "PLZ des Risikoorts")),
-    ("vorversicherung", "Vorversicherung vorhanden?", _checkbox("Vorversicherung vorhanden?")),
-    ("antrag_abgelehnt", "Ähnlicher Antrag abgelehnt?", _checkbox("Ist bereits ein ähnlicher Antrag abgelehnt worden?", "ähnlicher Antrag abgelehnt")),
-    ("schaeden_letzte_5_jahre", "Schäden in den letzten 5 Jahren", _checkbox("Waren Sie in den letzten 5 Jahren von Schäden betroffen?", "Schäden in den letzten 5 Jahren")),
+    ("vorversicherung", "Vorversicherung vorhanden?", _checkbox_robust("Vorversicherung vorhanden?")),
+    ("antrag_abgelehnt", "Ähnlicher Antrag abgelehnt?", _checkbox_robust("Ist bereits ein ähnlicher Antrag abgelehnt worden?", "ähnlicher Antrag abgelehnt")),
+    ("schaeden_letzte_5_jahre", "Schäden in den letzten 5 Jahren", _checkbox_robust("Waren Sie in den letzten 5 Jahren von Schäden betroffen?", "Schäden in den letzten 5 Jahren")),
     ("besondere_hinweise", "Besondere Hinweise und Vereinbarungen", _label("Besondere Hinweise und Vereinbarungen", r"[^\n]{2,500}")),
-    ("abweichender_kontoinhaber", "Abweichender Kontoinhaber vorhanden?", _checkbox("Gibt es einen abweichenden Kontoinhaber?")),
+    ("abweichender_kontoinhaber", "Abweichender Kontoinhaber vorhanden?", _checkbox_robust("Gibt es einen abweichenden Kontoinhaber?")),
     ("kontoinhaber_name", "Name Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "Name", TEXT, not_followed_by="des Kreditinstituts")),
     ("kontoinhaber_firmenname", "Firmenname Kontoinhaber", _label("Firmenname", TEXT)),
     ("kontoinhaber_geburtsdatum", "Geburtsdatum Kontoinhaber", _scoped_date(KONTOINHABER_ANCHOR, "Geburtsdatum")),
     ("kontoinhaber_strasse", "Straße, Hausnummer Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "Straße, Hausnummer", TEXT)),
     ("kontoinhaber_plz_ort", "PLZ, Ort Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "PLZ, Ort", TEXT)),
-    ("kontoinhaber_kreditinstitut", "Name des Kreditinstituts", _label("Name des Kreditinstituts", TEXT, "Kreditinstitut")),
+    # Gescopt, weil "Kreditinstitut" allein sonst z.B. bei einem
+    # gescannten Dokument (docTR-Fallback) fälschlich "MLP Banking AG" aus
+    # dem wiederkehrenden Seitenfuß ("Bankverbindung ... MLP Banking AG")
+    # treffen kann statt dem tatsächlichen Kreditinstitut des
+    # Kontoinhabers - gleiche Bug-Klasse wie bei kontoinhaber_iban oben.
+    ("kontoinhaber_kreditinstitut", "Name des Kreditinstituts", _scoped_label(KONTOINHABER_ANCHOR, "Name des Kreditinstituts", TEXT, "Kreditinstitut")),
     # Gescopt, weil "IBAN" allein sonst nachweislich die MLP-eigene
     # Bankverbindung aus dem Seitenfuß trifft ("Bankverbindung ... IBAN:
     # DE19 6723 ...", wiederholt sich auf fast jeder Seite) statt der

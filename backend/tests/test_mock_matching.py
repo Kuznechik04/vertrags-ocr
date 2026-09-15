@@ -8,7 +8,9 @@ from app.ocr.mlp_template import (
     MONEY,
     TEXT,
     YES_NO,
+    _checkbox_robust,
     _escape_label,
+    _money_robust,
     _klausel_selbstbeteiligung,
     _klausel_status,
     _label_nearby,
@@ -422,3 +424,72 @@ def test_label_until_reports_no_value_when_empty():
 
     assert match.match_status == "data_not_found"
     assert match.value is None
+
+
+def test_ss_fold_matches_doctr_misreading():
+    """Regression-Guard anhand eines echten, gescannten MLP-Dokuments: die
+    OCR-Engine docTR liest "ß" konsistent als großes "B" -
+    "Einschluß" -> "EinschluB", "geschweißte" -> "geschweiBte". Der
+    bestehende Umlaut-Fallback (ü/ä/ö) deckte das bisher nicht ab."""
+    model = MockOCRModel()
+    page = _page(
+        [
+            _word("EinschluB", 0.1, 0.1),
+            _word("Brand", 0.2, 0.1),
+        ]
+    )
+    pattern = rf"{_escape_label('Einschluß')}\s*:?\s*({TEXT})"
+
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "Brand"
+
+
+def test_checkbox_robust_bridges_value_on_next_ocr_line():
+    """Regression-Guard anhand eines echten, gescannten MLP-Dokuments: bei
+    der OCR-Engine docTR landen Label und Ja/Nein-Wert manchmal auf zwei
+    getrennten erkannten Zeilen, obwohl sie im Originalbild in derselben
+    Zeile stehen (z.B. "Pfahl-, ... (10.000 EUR beitragsfrei)" und
+    "10.000 EUR" als zwei docTR-Zeilen). `_checkbox`/`_label` allein
+    (`_SAME_LINE_SEP`, bewusst ohne Zeilenumbruch) findet das nicht -
+    `_checkbox_robust`/`_robust` mit dem `_label_nearby`-Fallback muss es
+    trotzdem finden."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Vorsteuerabzugsberechtigt",
+            "nein",
+        ]
+    )
+
+    pattern = _checkbox_robust("Vorsteuerabzugsberechtigt")
+    match = model._match_field_in_pages(pattern, [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "nein"
+
+
+def test_money_robust_does_not_collide_with_similarly_prefixed_field():
+    """Regression-Guard anhand eines echten, gescannten MLP-Dokuments: ein
+    zu kurzer `_label_nearby`-Anker wie "Nettobeitrag" allein matcht auch
+    als Präfix-Teilstring von "Nettobeitrag Bauleistung ..." - dabei griff
+    ein erster (zu naiver) Testaufbau fälschlich den Bauleistungs-Betrag
+    statt "kein Wert gefunden" für das eigentliche Nettobeitrag-Feld. Der
+    tatsächlich verwendete, längere/spezifischere Alias ("Nettobeitrag
+    (unter Berücksichtigung der Mindestprämie)") darf diese Kollision
+    nicht haben."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Nettobeitrag Bauleistung (ohne Berücksichtigung der Mindestprämie) 316,80 EUR",
+            "Nettobeitrag (unter Berücksichtigung der Mindestprämie)",
+            "435,80 EUR",
+        ]
+    )
+
+    pattern = _money_robust("Nettobeitrag (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag gesamt")
+    match = model._match_field_in_pages(pattern, [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "435,80 EUR"
