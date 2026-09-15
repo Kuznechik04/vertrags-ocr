@@ -63,9 +63,31 @@ def _escape_label(label: str) -> str:
     return r"\s*".join(re.escape(ch) for ch in label if not ch.isspace())
 
 
+# Trenner zwischen Label und Wert: bewusst NUR Whitespace INNERHALB der
+# Zeile (kein `\n`), plus optionaler Doppelpunkt, optionaler EIN-zeiliger
+# Klammer-Zusatz ("(unter Berücksichtigung der ...)") und optionaler
+# Fußnoten-Stern ("*"). Label und Wert stehen im MLP-Formular praktisch
+# immer auf DERSELBEN Zeile (label-wort(e) direkt gefolgt vom Wert im
+# selben Tabellenzeilen-Fließtext).
+#
+# Warum kein `\s*` (das auch "\n" matcht): an einem echten Dokument
+# nachgewiesen, dass ein im Formular LEER gelassenes Feld (Label allein auf
+# seiner Zeile, kein Wert dahinter) sonst über den Zeilenumbruch hinweg
+# fälschlich den TEXT DES NÄCHSTEN FELD-LABELS als eigenen Wert einfängt -
+# z.B. matchte das leere Kontoinhaber-"Name"-Feld den Text "oder
+# Firmenname" (Label des NÄCHSTEN Feldes) als seinen eigenen Wert. Das ist
+# schlimmer als ein Fehltreffer, weil es als "matched" mit falschem Inhalt
+# im Review landet statt korrekt als "kein Wert gefunden" aufzufallen.
+#
+# Die optionale Klammer-Zusatz-Gruppe deckt Fälle wie "Baugrubenumschließung
+# (10.000 EUR beitragsfrei) 10.000 EUR" ab, wo der eigentliche Wert nach
+# einem erklärenden Klammereinschub in Klammern folgt.
+_SAME_LINE_SEP = r"[ \t]*:?[ \t]*(?:\([^)\n]*\)[ \t]*)?\*?[ \t]*"
+
+
 def _label(label: str, value: str = TEXT, *aliases: str) -> list[str]:
     labels = (label,) + aliases
-    return [rf"{_escape_label(item)}\s*:?\s*({value})" for item in labels]
+    return [rf"{_escape_label(item)}{_SAME_LINE_SEP}({value})" for item in labels]
 
 
 def _checkbox(label: str, *aliases: str) -> list[str]:
@@ -79,6 +101,28 @@ def _date(label: str, *aliases: str) -> list[str]:
 
 def _money(label: str, *aliases: str) -> list[str]:
     return _label(label, MONEY, *aliases)
+
+
+def _label_nearby(label: str, value: str) -> str:
+    """Sucht `value` irgendwo innerhalb von `_KLAUSEL_PROXIMITY_WINDOW`
+    Zeichen NACH `label` - nicht nur direkt angrenzend wie `_label`. Für
+    Fälle, in denen der Wert durch einen Zeilenumbruch mitten in einem
+    erklärenden, MEHRZEILIGEN Klammer-Einschub landet (anders als der
+    einzeilige Fall, den `_SAME_LINE_SEP` bereits abdeckt) - an einem echten
+    Dokument nachgewiesen: "Nettobeitrag Bauherrenhaftpflicht (unter
+    Berücksichtigung der 59,00 EUR\\nMindestprämie)". Als zusätzliches,
+    NACHRANGIGES Muster gedacht (nach den präziseren `_label`/`_money`-
+    Mustern in der Musterliste), da es durch den größeren Suchradius
+    unspezifischer ist.
+
+    Das Fenster ist NICHT-gierig (`.{0,N}?`, nicht `.{0,N}`): ein gieriges
+    Fenster konsumiert erst maximal viele Zeichen und backtracked dann nur
+    minimal, um den Wert noch unterzubringen - dabei nachweislich (an
+    diesem Dokument) nur das ENDE des richtigen Betrags "59,00 EUR"
+    erwischt ("0 EUR" statt "59,00 EUR"), weil ein einzelnes "0" direkt vor
+    "EUR" bereits als minimaler `[\\d.]+`-Treffer reicht. Nicht-gierig
+    stoppt beim erstmöglichen (= nächstgelegenen) gültigen Wert."""
+    return rf"{_escape_label(label)}.{{0,{_KLAUSEL_PROXIMITY_WINDOW}}}?({value})"
 
 
 def _klausel_status(klausel_code: str) -> list[str]:
@@ -121,7 +165,9 @@ def _klausel_selbstbeteiligung(klausel_code: str) -> list[str]:
     ]
 
 
-def _scoped_label(section_anchor: str, label: str, value: str = TEXT, *aliases: str) -> list[str]:
+def _scoped_label(
+    section_anchor: str, label: str, value: str = TEXT, *aliases: str, not_followed_by: str | None = None
+) -> list[str]:
     """Wie `_label`, verlangt aber zusätzlich, dass `section_anchor` (z.B.
     die Frage "Gibt es einen abweichenden Kontoinhaber?") im Text VOR diesem
     Label vorkommt.
@@ -139,10 +185,20 @@ def _scoped_label(section_anchor: str, label: str, value: str = TEXT, *aliases: 
     das dazwischenliegende `.*?` braucht DOTALL, um über Zeilenumbrüche
     hinweg zu matchen (siehe `re.DOTALL` in `mock_model._match_field_in_pages`).
     Anker und Label müssen dafür auf derselben Seite stehen, da dort pro
-    Feld je Seite einzeln gesucht wird."""
+    Feld je Seite einzeln gesucht wird.
+
+    `not_followed_by` (optional): schließt eine konkrete, bekannte
+    Kollision INNERHALB desselben Abschnitts aus. Beispiel aus einem echten
+    Dokument: das (im Formular leer gelassene) Kontoinhaber-Feld "Name"
+    matchte fälschlich auf das spätere, inhaltlich andere Feld "Name des
+    Kreditinstituts" - weil "name" als Teilstring auch dort vorkommt und
+    DIESES Vorkommen (anders als das leere) tatsächlich einen Wert danach
+    hat. Ein negativer Lookahead direkt nach dem Label schließt das aus,
+    ohne den Suchradius für alle anderen gescopten Felder einzuschränken."""
     labels = (label,) + aliases
+    exclude = rf"(?!\s*{_escape_label(not_followed_by)})" if not_followed_by else ""
     return [
-        rf"(?:{_escape_label(section_anchor)}.*?){_escape_label(item)}\s*:?\s*({value})"
+        rf"(?:{_escape_label(section_anchor)}.*?){_escape_label(item)}{exclude}{_SAME_LINE_SEP}({value})"
         for item in labels
     ]
 
@@ -162,8 +218,13 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("strasse_hausnummer", "Straße u. Haus-Nr.", _label("Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer", "Straße, Hausnummer")),
     ("plz_wohnort", "PLZ, Wohnort", _label("PLZ, Wohnort", TEXT, "PLZ und Wohnort", "PLZ, Ort")),
     ("geburtsdatum", "Geburtsdatum", _date("Geburtsdatum")),
-    ("versicherungsbeginn", "Versicherungsbeginn", _date("Versicherungsbeginn", "Versicherungsbeginn ab", "Beginn der Versicherung")),
-    ("versicherungsablauf", "Versicherungsablauf", _date("Versicherungsablauf", "Versicherungsende", "Ablauf der Versicherung")),
+    # Zusätzliches Muster je Feld deckt das im echten Dokument beobachtete
+    # KOMBINIERTE Label "Versicherungsbeginn / -ablauf 01.07.2026 bis
+    # 01.07.2028" ab (ein Formularfeld für beide Daten statt zweier
+    # getrennter Labels) - die ursprünglichen `_date(...)`-Muster bleiben
+    # als Fallback für Dokumentvarianten mit getrennten Labels erhalten.
+    ("versicherungsbeginn", "Versicherungsbeginn", _date("Versicherungsbeginn", "Versicherungsbeginn ab", "Beginn der Versicherung") + [rf"versicherungsbeginn\s*/\s*-?ablauf[ \t]*:?[ \t]*({DATE})"]),
+    ("versicherungsablauf", "Versicherungsablauf", _date("Versicherungsablauf", "Versicherungsende", "Ablauf der Versicherung") + [rf"versicherungsbeginn\s*/\s*-?ablauf[ \t]*:?[ \t]*{DATE}[ \t]*bis[ \t]*({DATE})"]),
     ("vertragslaufzeit_jahre", "Vertragslaufzeit in Jahren", _label("Vertragslaufzeit in Jahren", r"\d{1,2}", "Vertragslaufzeit", "Laufzeit")),
     ("bruttobeitrag", "Bruttobeitrag inkl. Versicherungssteuer", _money("Bruttobeitrag inkl. Versicherungssteuer", "Bruttobeitrag", "Gesamtbeitrag inkl. Versicherungssteuer")),
     ("versicherungssumme", "Versicherungs-/ Bausumme", _money("Versicherungs-/ Bausumme", "Versicherungs-/Bausumme", "Bausumme", "Versicherungssumme")),
@@ -189,10 +250,22 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("beschreibung", "Beschreibung", _label("Beschreibung", r"[^\n]{2,500}")),
     ("bergbaugebiet", "Liegt das Bauvorhaben in einem Bergbaugebiet?", _checkbox("Liegt das Bauvorhaben in einem Bergbaugebiet?", "Bauvorhaben in einem Bergbaugebiet")),
     ("feuergefaehrliche_nachbarbetriebe", "Gefahrerhöhung durch feuergefährliche Nachbarbetriebe", _checkbox("Gefahrerhöhung durch feuergefährliche Nachbarbetriebe")),
-    ("solar_anlagen_ueber_500000", "Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR", _checkbox("Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR", "Werden Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR verbaut?")),
+    # Zusätzliches Muster: im echten Dokument bricht diese lange Frage über
+    # eine Zeile um genau zwischen "500.000" und "EUR" - die Text-Extraktion
+    # hängt "Nein" dabei mitten hinein ("... über 500.000 Nein\nEUR verbaut
+    # ? *"), noch vor "EUR verbaut?". `_label_nearby` sucht den Ja/Nein-Wert
+    # daher zusätzlich direkt nach der (im Dokument stabilen) Zahl statt nur
+    # nach der vollständigen Frage.
+    ("solar_anlagen_ueber_500000", "Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR", _checkbox("Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR", "Werden Photovoltaik-/ Solar-/ Geothermie-Anlagen über 500.000 EUR verbaut?") + [_label_nearby("500.000", YES_NO)]),
     ("denkmalschutz", "Steht das Gebäude unter Denkmalschutz?", _checkbox("Steht das Gebäude unter Denkmalschutz?", "Denkmalschutz")),
     ("nettobeitrag_bauleistung", "Nettobeitrag Bauleistung", _money("Nettobeitrag Bauleistung (ohne Berücksichtigung der Mindestprämie)", "Nettobeitrag Bauleistung")),
-    ("nettobeitrag_bauherrenhaftpflicht", "Nettobeitrag Bauherrenhaftpflicht", _money("Nettobeitrag Bauherrenhaftpflicht (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag Bauherrenhaftpflicht")),
+    # Zusätzliches Muster: im echten Dokument bricht der Klammer-Zusatz
+    # "(unter Berücksichtigung der Mindestprämie)" über eine Zeile um, der
+    # Betrag landet dabei MITTEN in der (dadurch über 2 Zeilen offenen)
+    # Klammer ("... Bauherrenhaftpflicht (unter Berücksichtigung der 59,00
+    # EUR\nMindestprämie)") - der einzeilige Klammer-Zusatz in `_SAME_LINE_SEP`
+    # deckt das nicht ab, `_label_nearby` schon.
+    ("nettobeitrag_bauherrenhaftpflicht", "Nettobeitrag Bauherrenhaftpflicht", _money("Nettobeitrag Bauherrenhaftpflicht (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag Bauherrenhaftpflicht") + [_label_nearby("Nettobeitrag Bauherrenhaftpflicht", MONEY)]),
     ("nettobeitrag_gesamt", "Nettobeitrag", _money("Nettobeitrag (unter Berücksichtigung der Mindestprämie)", "Nettobeitrag gesamt")),
     ("gesamtbeitrag_versicherungssteuer", "Gesamtbeitrag inkl. Versicherungssteuer", _money("Gesamtbeitrag inkl. Versicherungssteuer")),
     ("grundselbstbeteiligung", "Grundselbstbeteiligung", _label("Grundselbstbeteiligung", SELBSTBETEILIGUNG)),
@@ -212,7 +285,7 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("schaeden_letzte_5_jahre", "Schäden in den letzten 5 Jahren", _checkbox("Waren Sie in den letzten 5 Jahren von Schäden betroffen?", "Schäden in den letzten 5 Jahren")),
     ("besondere_hinweise", "Besondere Hinweise und Vereinbarungen", _label("Besondere Hinweise und Vereinbarungen", r"[^\n]{2,500}")),
     ("abweichender_kontoinhaber", "Abweichender Kontoinhaber vorhanden?", _checkbox("Gibt es einen abweichenden Kontoinhaber?")),
-    ("kontoinhaber_name", "Name Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "Name", TEXT)),
+    ("kontoinhaber_name", "Name Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "Name", TEXT, not_followed_by="des Kreditinstituts")),
     ("kontoinhaber_firmenname", "Firmenname Kontoinhaber", _label("Firmenname", TEXT)),
     ("kontoinhaber_geburtsdatum", "Geburtsdatum Kontoinhaber", _scoped_date(KONTOINHABER_ANCHOR, "Geburtsdatum")),
     ("kontoinhaber_strasse", "Straße, Hausnummer Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "Straße, Hausnummer", TEXT)),

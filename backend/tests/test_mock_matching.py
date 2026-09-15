@@ -4,10 +4,13 @@ selbst (Kandidaten-Sammlung, Mehrdeutigkeits-Erkennung, re.error-Robustheit)."""
 from app.ocr.mock_model import MockOCRModel, PageData, Word
 from app.ocr.mlp_template import (
     KONTOINHABER_ANCHOR,
+    MONEY,
     YES_NO,
     _escape_label,
     _klausel_selbstbeteiligung,
     _klausel_status,
+    _label_nearby,
+    _SAME_LINE_SEP,
     _scoped_label,
 )
 
@@ -229,3 +232,84 @@ def test_klausel_selbstbeteiligung_does_not_grab_value_from_earlier_klausel():
 
     assert match.match_status == "matched"
     assert match.value == "10% mind. 500 EUR"
+
+
+def test_blank_field_does_not_pick_up_next_labels_text():
+    """Regression-Guard anhand eines echten MLP-Dokuments: ein im Formular
+    LEER gelassenes Feld (Label allein auf seiner Zeile, kein Wert
+    dahinter) matchte vor `_SAME_LINE_SEP` fälschlich über den
+    Zeilenumbruch hinweg den TEXT DES NÄCHSTEN FELD-LABELS als eigenen
+    Wert - z.B. übernahm das leere Kontoinhaber-"Name"-Feld den Text "oder
+    Firmenname" (Label des nächsten Feldes). `\\s*` erlaubte das, weil es
+    auch "\\n" matcht; `_SAME_LINE_SEP` beschränkt den Trenner auf
+    Whitespace INNERHALB der Zeile."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Name",
+            "oder Firmenname",
+            "Geburtsdatum",
+        ]
+    )
+    pattern = rf"{_escape_label('Name')}\s*:?\s*([^\n.]{{2,120}})"
+    fixed_pattern = rf"{_escape_label('Name')}{_SAME_LINE_SEP}([^\n.]{{2,120}})"
+
+    old_match = model._match_field_in_pages([pattern], [page])
+    fixed_match = model._match_field_in_pages([fixed_pattern], [page])
+
+    assert old_match.match_status == "matched"
+    assert old_match.value == "oder Firmenname"  # dokumentiert den alten Bug
+    assert fixed_match.match_status == "data_not_found"
+
+
+def test_scoped_label_not_followed_by_excludes_sibling_field_collision():
+    """Regression-Guard anhand eines echten MLP-Dokuments: das leere
+    Kontoinhaber-"Name"-Feld matchte (nach dem `_SAME_LINE_SEP`-Fix) immer
+    noch falsch - diesmal, weil es über den bloß leeren ersten Treffer
+    hinweg zum späteren, inhaltlich ANDEREN Feld "Name des
+    Kreditinstituts" weitersprang (das echten Text danach hat). Der
+    `not_followed_by`-Lookahead muss diese konkrete Kollision ausschließen,
+    ohne den Suchradius für andere gescopte Felder einzuschränken."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Gibt es einen abweichenden Kontoinhaber ? nein",
+            "Name",
+            "oder Firmenname",
+            "Name des Kreditinstituts Deutsche Kreditbank Berlin",
+        ]
+    )
+
+    pattern_without_exclude = _scoped_label(KONTOINHABER_ANCHOR, "Name")[0]
+    pattern_with_exclude = _scoped_label(KONTOINHABER_ANCHOR, "Name", not_followed_by="des Kreditinstituts")[0]
+
+    match_without = model._match_field_in_pages([pattern_without_exclude], [page])
+    match_with = model._match_field_in_pages([pattern_with_exclude], [page])
+
+    assert match_without.match_status == "matched"
+    assert match_without.value == "des Kreditinstituts Deutsche Kreditbank Berlin"  # dokumentiert den alten Bug
+    assert match_with.match_status == "data_not_found"
+
+
+def test_label_nearby_prefers_closest_value_over_greedy_backtrack():
+    """Regression-Guard anhand eines echten MLP-Dokuments: ein GIERIGES
+    `.{0,N}` zwischen Anker und Wert konsumiert erst maximal viele Zeichen
+    und backtracked dann nur MINIMAL, um doch noch einen Wert unterzubringen
+    - dabei griff es nachweislich nur "0 EUR" ab (das Ende von "59,00 EUR",
+    weil ein einzelnes "0" direkt vor "EUR" bereits als minimaler
+    `[\\d.]+`-Treffer reicht) statt des tatsächlich gemeinten, näher am
+    Anker liegenden Betrags. `_label_nearby` muss nicht-gierig sein."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Nettobeitrag Bauherrenhaftpflicht (unter Berücksichtigung der 59,00 EUR",
+            "Mindestprämie)",
+            "Nettobeitrag (unter Berücksichtigung der Mindestprämie) 224,00 EUR",
+        ]
+    )
+
+    pattern = _label_nearby("Nettobeitrag Bauherrenhaftpflicht", MONEY)
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "59,00 EUR"
