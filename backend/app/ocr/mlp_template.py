@@ -14,7 +14,19 @@ RELEVANT_PAGE_COUNT = 8
 DATE = r"\d{1,2}[./]\d{1,2}[./]\d{2,4}"
 MONEY = r"[\d.]+(?:,\d{1,2})?\s*(?:EUR|€|Euro)?"
 YES_NO = r"(?:ja|nein|yes|no|[xX])"
-TEXT = r"[^\n.]{2,120}"
+# Punkt im Wert nur dann durchlassen, wenn danach (ggf. nach Whitespace)
+# eine Ziffer folgt - typisch für Abkürzungen wie "Str." oder "Nr." vor
+# einer Hausnummer. WICHTIG: das Matching läuft gegen den BEREITS
+# KLEINGESCHRIEBENEN Seitentext (siehe `joined_lower` in
+# `mock_model._match_field_in_pages`) - eine Großbuchstaben-Heuristik für
+# "Satzanfang" würde dort nie greifen, deshalb Ziffer statt Großbuchstabe
+# als Signal. An einem echten Dokument nachgewiesen: "Straße u. Haus-Nr.
+# Herner Str. 212" wurde mit einer reinen `[^\n.]`-Ausschlussklasse zu
+# "Herner Str" abgeschnitten - die Hausnummer ging komplett verloren.
+# Bekannter Rand-/Fehlerfall: "GmbH & Co. KG" (Punkt gefolgt von Buchstabe,
+# nicht Ziffer) bricht weiterhin bei "Co" ab - das war aber auch vorher
+# schon so (jeder Punkt brach sofort ab), also keine Verschlechterung.
+TEXT = r"(?:[^\n.]|\.(?=\s*\d)){2,120}"
 # MLP nutzt für Leistungsbausteine ("gewünscht"/"nicht gewünscht") ein
 # anderes Vokabular als für die übrigen Ja/Nein-Fragen ("ja"/"nein") - siehe
 # `_klausel_status` unten, an einem echten Dokument-Transkript verifiziert.
@@ -211,13 +223,21 @@ def _scoped_date(section_anchor: str, label: str, *aliases: str) -> list[str]:
 # Text der Frage/Überschrift, die den jeweiligen Formularabschnitt einleitet.
 KONTOINHABER_ANCHOR = "Gibt es einen abweichenden Kontoinhaber?"
 RISIKOORT_ANCHOR = "Versicherungsort"
+# Scoped, weil "Name" allein sonst nachweislich am ERSTEN Formularabschnitt
+# hängen bleibt - dort steht der MLP-BERATER-Name ("Berater Name Martin
+# Blaton"), noch vor der eigentlichen Antragsteller-Sektion. Ohne Scoping
+# gewinnt der frühere (falsche) Treffer, siehe `_scoped_label`-Docstring.
+ANTRAGSTELLER_ANCHOR = "Versicherungsnehmer / Antragsteller"
 
 
 MLP_FIELDS: list[tuple[str, str, list[str]]] = [
-    ("name", "Name", _label("Name", TEXT, "Antragsteller", "Versicherungsnehmer")),
-    ("strasse_hausnummer", "Straße u. Haus-Nr.", _label("Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer", "Straße, Hausnummer")),
-    ("plz_wohnort", "PLZ, Wohnort", _label("PLZ, Wohnort", TEXT, "PLZ und Wohnort", "PLZ, Ort")),
-    ("geburtsdatum", "Geburtsdatum", _date("Geburtsdatum")),
+    # Gescoptes Muster zuerst (gewinnt bei Erfolg immer, siehe Sortierung
+    # in `_match_field_in_pages`), ungescoptes Muster als Fallback für
+    # Dokumentvarianten ohne diese Abschnittsüberschrift.
+    ("name", "Name", _scoped_label(ANTRAGSTELLER_ANCHOR, "Name", TEXT, "Antragsteller", "Versicherungsnehmer") + _label("Name", TEXT, "Antragsteller", "Versicherungsnehmer")),
+    ("strasse_hausnummer", "Straße u. Haus-Nr.", _scoped_label(ANTRAGSTELLER_ANCHOR, "Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer", "Straße, Hausnummer") + _label("Straße u. Haus-Nr.", TEXT, "Straße und Hausnummer", "Straße, Hausnummer")),
+    ("plz_wohnort", "PLZ, Wohnort", _scoped_label(ANTRAGSTELLER_ANCHOR, "PLZ, Wohnort", TEXT, "PLZ und Wohnort", "PLZ, Ort") + _label("PLZ, Wohnort", TEXT, "PLZ und Wohnort", "PLZ, Ort")),
+    ("geburtsdatum", "Geburtsdatum", _scoped_date(ANTRAGSTELLER_ANCHOR, "Geburtsdatum") + _date("Geburtsdatum")),
     # Zusätzliches Muster je Feld deckt das im echten Dokument beobachtete
     # KOMBINIERTE Label "Versicherungsbeginn / -ablauf 01.07.2026 bis
     # 01.07.2028" ab (ein Formularfeld für beide Daten statt zweier
@@ -291,5 +311,11 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("kontoinhaber_strasse", "Straße, Hausnummer Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "Straße, Hausnummer", TEXT)),
     ("kontoinhaber_plz_ort", "PLZ, Ort Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "PLZ, Ort", TEXT)),
     ("kontoinhaber_kreditinstitut", "Name des Kreditinstituts", _label("Name des Kreditinstituts", TEXT, "Kreditinstitut")),
-    ("kontoinhaber_iban", "IBAN Kontoinhaber", _label("IBAN", r"[A-Z]{2}\s?[A-Z0-9 ]{12,30}")),
+    # Gescopt, weil "IBAN" allein sonst nachweislich die MLP-eigene
+    # Bankverbindung aus dem Seitenfuß trifft ("Bankverbindung ... IBAN:
+    # DE19 6723 ...", wiederholt sich auf fast jeder Seite) statt der
+    # tatsächlichen Kontoinhaber-IBAN - der Seitenfuß steht auf einer
+    # FRÜHEREN Seite als der eigentliche Kontoinhaber-Abschnitt und würde
+    # ohne Scoping gewinnen.
+    ("kontoinhaber_iban", "IBAN Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "IBAN", r"[A-Z]{2}\s?[A-Z0-9 ]{12,30}")),
 ]

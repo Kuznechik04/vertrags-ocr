@@ -3,8 +3,10 @@ HTTP-API zu gehen - schneller und präziser für die Matching-/Scoring-Logik
 selbst (Kandidaten-Sammlung, Mehrdeutigkeits-Erkennung, re.error-Robustheit)."""
 from app.ocr.mock_model import MockOCRModel, PageData, Word
 from app.ocr.mlp_template import (
+    ANTRAGSTELLER_ANCHOR,
     KONTOINHABER_ANCHOR,
     MONEY,
+    TEXT,
     YES_NO,
     _escape_label,
     _klausel_selbstbeteiligung,
@@ -313,3 +315,66 @@ def test_label_nearby_prefers_closest_value_over_greedy_backtrack():
 
     assert match.match_status == "matched"
     assert match.value == "59,00 EUR"
+
+
+def test_text_allows_abbreviation_period_before_digit():
+    """Regression-Guard anhand eines echten MLP-Dokuments: die alte
+    `TEXT`-Definition (`[^\\n.]{2,120}`) schloss jeden Punkt als Werte-Ende
+    aus - "Straße u. Haus-Nr. Herner Str. 212" wurde dadurch zu "Herner
+    Str" abgeschnitten, die Hausnummer ging komplett verloren. Ein Punkt
+    direkt vor einer Ziffer (typisch für Abkürzungen wie "Str."/"Nr.") darf
+    den Wert nicht mehr abschneiden."""
+    model = MockOCRModel()
+    page = _page_from_lines(["Straße u. Haus-Nr. Herner Str. 212"])
+
+    pattern = rf"{_escape_label('Straße u. Haus-Nr.')}{_SAME_LINE_SEP}({TEXT})"
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "Herner Str. 212"
+
+
+def test_scoped_antragsteller_field_ignores_earlier_berater_name():
+    """Regression-Guard anhand eines echten MLP-Dokuments: das "name"-Feld
+    matchte fälschlich "Martin Blaton" (den MLP-BERATER, Zeile "Berater
+    Name Martin Blaton" weiter oben im Dokument) statt "Benjamin Hein" (den
+    tatsächlichen Antragsteller/Versicherungsnehmer) - weil "Name" als
+    Anker ungescopt einfach den frühesten Treffer im Dokument nimmt. Der
+    Scope auf die Abschnittsüberschrift "Versicherungsnehmer /
+    Antragsteller" muss den früheren, falschen Treffer ausschließen."""
+    model = MockOCRModel()
+    page = _page_from_lines(
+        [
+            "Berater Name Martin Blaton",
+            "Versicherungsnehmer / Antragsteller",
+            "Name Benjamin Hein",
+        ]
+    )
+
+    pattern = _scoped_label(ANTRAGSTELLER_ANCHOR, "Name", TEXT)[0]
+    match = model._match_field_in_pages([pattern], [page])
+
+    assert match.match_status == "matched"
+    assert match.value == "Benjamin Hein"
+
+
+def test_scoped_kontoinhaber_iban_ignores_earlier_company_iban():
+    """Regression-Guard anhand eines echten MLP-Dokuments: das ungescopte
+    "IBAN"-Feld matchte die MLP-eigene Bankverbindung aus dem Seitenfuß
+    ("Bankverbindung ... IBAN: DE19 6723 ..."), die auf einer früheren
+    Seite als der eigentliche Kontoinhaber-Abschnitt steht, statt der
+    tatsächlichen Kontoinhaber-IBAN."""
+    model = MockOCRModel()
+    footer_page = _page_from_lines(["Bankverbindung MLP Banking AG IBAN: DE19 6723 0000 0009 0000 25"])
+    kontoinhaber_page = _page_from_lines(
+        [
+            "Gibt es einen abweichenden Kontoinhaber ? nein",
+            "IBAN DE77 1203 0000 1063 0763 58",
+        ]
+    )
+
+    pattern = _scoped_label(KONTOINHABER_ANCHOR, "IBAN", r"[A-Z]{2}\s?[A-Z0-9 ]{12,30}")[0]
+    match = model._match_field_in_pages([pattern], [footer_page, kontoinhaber_page])
+
+    assert match.match_status == "matched"
+    assert match.value == "DE77 1203 0000 1063 0763 58"
