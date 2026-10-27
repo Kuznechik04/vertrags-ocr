@@ -5,6 +5,7 @@ const STATUS_MESSAGES: Partial<Record<FieldMatchStatus, string>> = {
   field_not_found: "Feld nicht im Dokument gefunden",
   data_not_found: "Feld gefunden, aber kein Wert erkannt",
   no_pattern: "Keine automatische Erkennung für dieses Feld",
+  not_required: "Nicht erforderlich (laut abhängigem Feld)",
 };
 
 export interface FieldListHandlers {
@@ -129,7 +130,7 @@ function createFieldRow(initialField: ContractField, handlers: FieldListHandlers
       confidenceEl.className = `confidence confidence-${confidenceLevel}`;
       confidenceEl.textContent = `${Math.round(field.confidence * 100)}%`;
     } else {
-      confidenceEl.className = `confidence confidence-${field.match_status === "no_pattern" ? "manual" : "missing"}`;
+      confidenceEl.className = `confidence confidence-${field.match_status === "no_pattern" || field.match_status === "not_required" ? "manual" : "missing"}`;
       confidenceEl.textContent = STATUS_MESSAGES[field.match_status] ?? "kein Wert erkannt";
     }
     renderActions();

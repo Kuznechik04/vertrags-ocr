@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from app.ocr.base import FieldPrediction
+
 
 RELEVANT_PAGE_COUNT = 8
 
@@ -36,7 +38,11 @@ YES_NO = r"\b(?:ja|nein|yes|no|x)\b"
 # Bekannter Rand-/Fehlerfall: "GmbH & Co. KG" (Punkt gefolgt von Buchstabe,
 # nicht Ziffer) bricht weiterhin bei "Co" ab - das war aber auch vorher
 # schon so (jeder Punkt brach sofort ab), also keine Verschlechterung.
-TEXT = r"(?:[^\n.]|\.(?=\s*\d)){2,120}"
+# `\t` ist ausgeschlossen, weil `mock_model._match_field_in_pages` eine
+# Tabellenzellen-Grenze (große horizontale Lücke, siehe
+# `mock_model.CELL_GAP_THRESHOLD`) als Tab einfügt - der Wert endet so an
+# seiner Zelle, statt in eine Nachbarzelle derselben Zeile weiterzulesen.
+TEXT = r"(?:[^\n\t.]|\.(?=[ \t]*\d)){2,120}"
 # MLP nutzt für Leistungsbausteine ("gewünscht"/"nicht gewünscht") ein
 # anderes Vokabular als für die übrigen Ja/Nein-Fragen ("ja"/"nein") - siehe
 # `_klausel_status` unten, an einem echten Dokument-Transkript verifiziert.
@@ -107,9 +113,32 @@ def _escape_label(label: str) -> str:
 _SAME_LINE_SEP = r"[ \t]*:?[ \t]*(?:\([^)\n]*\)[ \t]*)?\*?[ \t]*"
 
 
+# Wert einer kompletten Tabellenzelle: alles bis zur nächsten Zellgrenze
+# ("\t", siehe `mock_model.CELL_GAP_THRESHOLD`) bzw. zum Zeilenende - anders
+# als `TEXT` inklusive Punkten. An einem echten Scan nachgewiesen: "Name ⇥
+# Prof. Dr" wurde von `TEXT` (bricht am Punkt ab, um Fließtext-Sätze nicht
+# mitzunehmen) zu "Prof" abgeschnitten.
+CELL_TEXT = r"[^\n\t]{2,120}"
+# Label, dann direkt eine Zellgrenze: nur echte Label|Wert-Tabellenzeilen
+# erfüllen das, Fließtext (Vertragsbedingungen etc.) nie - deshalb darf der
+# Wert hier großzügiger sein (`CELL_TEXT`).
+_CELL_SEP = r"[ ]*:?[ ]*\*?[ ]*\t[ \t]*"
+
+
+def _cell_first(patterns: list[str], cell_patterns: list[str], value: str) -> list[str]:
+    """Stellt den Freitext-Mustern (`value == TEXT`) die präziseren
+    Zellmuster voran (frühere Muster gewinnen, siehe Sortierung in
+    `mock_model._match_field_in_pages`); andere Wertetypen bleiben unverändert."""
+    return cell_patterns + patterns if value == TEXT else patterns
+
+
 def _label(label: str, value: str = TEXT, *aliases: str) -> list[str]:
     labels = (label,) + aliases
-    return [rf"{_escape_label(item)}{_SAME_LINE_SEP}({value})" for item in labels]
+    return _cell_first(
+        [rf"{_escape_label(item)}{_SAME_LINE_SEP}({value})" for item in labels],
+        [rf"{_escape_label(item)}{_CELL_SEP}({CELL_TEXT})" for item in labels],
+        value,
+    )
 
 
 def _checkbox(label: str, *aliases: str) -> list[str]:
@@ -271,10 +300,12 @@ def _scoped_label(
     ohne den Suchradius für alle anderen gescopten Felder einzuschränken."""
     labels = (label,) + aliases
     exclude = rf"(?!\s*{_escape_label(not_followed_by)})" if not_followed_by else ""
-    return [
-        rf"(?:{_escape_label(section_anchor)}.*?){_escape_label(item)}{exclude}{_SAME_LINE_SEP}({value})"
-        for item in labels
-    ]
+    prefix = rf"(?:{_escape_label(section_anchor)}.*?)"
+    return _cell_first(
+        [rf"{prefix}{_escape_label(item)}{exclude}{_SAME_LINE_SEP}({value})" for item in labels],
+        [rf"{prefix}{_escape_label(item)}{exclude}{_CELL_SEP}({CELL_TEXT})" for item in labels],
+        value,
+    )
 
 
 def _scoped_date(section_anchor: str, label: str, *aliases: str) -> list[str]:
@@ -412,3 +443,46 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     # ohne Scoping gewinnen.
     ("kontoinhaber_iban", "IBAN Kontoinhaber", _scoped_label(KONTOINHABER_ANCHOR, "IBAN", r"[A-Z]{2}\s?[A-Z0-9 ]{12,30}")),
 ]
+
+
+# Kindfeld -> (Elternfeld, Werte des Elternfelds, bei denen das Kindfeld im
+# Formular legitim leer bleibt). Ohne diese Regel erscheinen z.B. bei "Gibt es
+# einen abweichenden Kontoinhaber? Nein" alle Kontoinhaber-Felder im Review
+# als Erkennungsfehler ("kein Wert erkannt"), obwohl das Leerlassen korrekt
+# ist. Nur "nein"/"no" lösen die Regel aus - ein bloßes angekreuztes "x" (auch
+# Teil von YES_NO) ist nicht eindeutig genug, um Felder auszublenden.
+MLP_FIELD_DEPENDENCIES: dict[str, tuple[str, frozenset[str]]] = {
+    key: ("abweichender_kontoinhaber", frozenset({"nein", "no"}))
+    for key in (
+        "kontoinhaber_name",
+        "kontoinhaber_firmenname",
+        "kontoinhaber_geburtsdatum",
+        "kontoinhaber_strasse",
+        "kontoinhaber_plz_ort",
+        "kontoinhaber_kreditinstitut",
+        "kontoinhaber_iban",
+    )
+}
+
+
+def apply_field_dependencies(
+    predictions: list[FieldPrediction], dependencies: dict[str, tuple[str, frozenset[str]]]
+) -> None:
+    """Markiert Kindfelder als "not_required", wenn ihr Elternfeld einen der
+    hinterlegten Werte hat (siehe `MLP_FIELD_DEPENDENCIES`). Ein trotzdem
+    erkannter Wert wird verworfen: steht im Formular "kein abweichender
+    Kontoinhaber", ist ein Treffer dort ein Fehltreffer (z.B. das ungescopte
+    "Firmenname"-Muster). Ändert `predictions` in-place."""
+    values_by_key = {p.field_key: (p.value or "").strip().lower() for p in predictions}
+    for prediction in predictions:
+        dependency = dependencies.get(prediction.field_key)
+        if dependency is None:
+            continue
+        parent_key, skip_values = dependency
+        if values_by_key.get(parent_key) not in skip_values:
+            continue
+        prediction.value = None
+        prediction.confidence = 0.0
+        prediction.bbox = None
+        prediction.ambiguous = False
+        prediction.match_status = "not_required"

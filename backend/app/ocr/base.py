@@ -21,7 +21,10 @@ from typing import Literal
 #   hinterlegt (z.B. Preset "Kein automatisches Muster") – kein
 #   Erkennungsfehlschlag, das Feld ist von vornherein rein manuell
 #   auszufüllen.
-MatchStatus = Literal["matched", "field_not_found", "data_not_found", "no_pattern"]
+# - "not_required": Das Feld darf laut einem anderen Feld leer bleiben (z.B.
+#   Kontoinhaber-Angaben, wenn "abweichender Kontoinhaber" = nein) - kein
+#   Erkennungsfehlschlag, siehe `mlp_template.apply_field_dependencies`.
+MatchStatus = Literal["matched", "field_not_found", "data_not_found", "no_pattern", "not_required"]
 
 
 @dataclass

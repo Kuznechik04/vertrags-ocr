@@ -238,19 +238,21 @@ def test_kontoinhaber_section_does_not_pick_up_antragsteller_value():
     und `_match_field_in_pages` ohne Kontext einfach den frühesten Treffer
     nimmt."""
     model = MockOCRModel()
-    antragsteller_page = _page([_word("Name:", 0.1, 0.1), _word("Max", 0.2, 0.1), _word("Mustermann", 0.3, 0.1)])
+    antragsteller_page = _page([_word("Name:", 0.1, 0.1), _word("Max", 0.16, 0.1), _word("Mustermann", 0.22, 0.1)])
     kontoinhaber_page = PageData(
         lines=[
             [
                 _word("Gibt", 0.1, 0.05), _word("es", 0.15, 0.05), _word("einen", 0.2, 0.05),
                 _word("abweichenden", 0.25, 0.05), _word("Kontoinhaber?", 0.35, 0.05), _word("Ja", 0.45, 0.05),
             ],
-            [_word("Name:", 0.1, 0.1), _word("Erika", 0.2, 0.1), _word("Musterfrau", 0.3, 0.1)],
+            # Wortabstand 1 % (realistisch innerhalb einer Zelle) - ab
+            # CELL_GAP_THRESHOLD würde "Erika | Musterfrau" als zwei Zellen gelten.
+            [_word("Name:", 0.1, 0.1), _word("Erika", 0.16, 0.1), _word("Musterfrau", 0.22, 0.1)],
         ]
     )
     pages = [antragsteller_page, kontoinhaber_page]
 
-    scoped_pattern = _scoped_label(KONTOINHABER_ANCHOR, "Name")[0]
+    scoped_pattern = _scoped_label(KONTOINHABER_ANCHOR, "Name")[-1]  # [-1]: Muster ohne Zellgrenze (Testtext hat keine Tabellen-Lücken)
     match = model._match_field_in_pages([scoped_pattern], pages)
 
     assert match.match_status == "matched"
@@ -347,8 +349,8 @@ def test_scoped_label_not_followed_by_excludes_sibling_field_collision():
         ]
     )
 
-    pattern_without_exclude = _scoped_label(KONTOINHABER_ANCHOR, "Name")[0]
-    pattern_with_exclude = _scoped_label(KONTOINHABER_ANCHOR, "Name", not_followed_by="des Kreditinstituts")[0]
+    pattern_without_exclude = _scoped_label(KONTOINHABER_ANCHOR, "Name")[-1]
+    pattern_with_exclude = _scoped_label(KONTOINHABER_ANCHOR, "Name", not_followed_by="des Kreditinstituts")[-1]
 
     match_without = model._match_field_in_pages([pattern_without_exclude], [page])
     match_with = model._match_field_in_pages([pattern_with_exclude], [page])
@@ -416,7 +418,7 @@ def test_scoped_antragsteller_field_ignores_earlier_berater_name():
         ]
     )
 
-    pattern = _scoped_label(ANTRAGSTELLER_ANCHOR, "Name", TEXT)[0]
+    pattern = _scoped_label(ANTRAGSTELLER_ANCHOR, "Name", TEXT)[-1]
     match = model._match_field_in_pages([pattern], [page])
 
     assert match.match_status == "matched"
@@ -601,3 +603,77 @@ def test_versicherungsort_alias_does_not_match_its_own_label_suffix():
 
     assert match.value != "/ Risikoort"
     assert match.match_status == "data_not_found"
+
+
+def _row(cells: list[str], top: float = 0.1) -> list[Word]:
+    """Eine Tabellenzeile: Wörter innerhalb einer Zelle eng beieinander, die
+    Zellen selbst durch eine große Lücke getrennt (wie Label-/Wertspalte im
+    MLP-Formular)."""
+    words: list[Word] = []
+    x = 0.05
+    for cell in cells:
+        for tok in cell.split(" "):
+            words.append(Word(text=tok, x0=x, x1=x + 0.04, top=top, bottom=top + 0.02))
+            x += 0.045
+        x += 0.25
+    return words
+
+
+def test_cell_pattern_keeps_dots_inside_table_cell():
+    page = PageData(lines=[_row(["Name", "Prof. Dr. Max Muster"])])
+    match = MockOCRModel()._match_field_in_pages(_label("Name"), [page])
+    assert match.value == "Prof. Dr. Max Muster"
+
+
+def test_text_value_stops_at_cell_boundary():
+    page = PageData(lines=[_row(["Name Max Muster", "Geburtsdatum"])])
+    match = MockOCRModel()._match_field_in_pages(_label("Name"), [page])
+    assert match.value == "Max Muster"
+
+
+def test_flowing_text_does_not_use_cell_pattern():
+    # Fließtext ohne Zellgrenze: weiterhin TEXT-Verhalten (stoppt am Satzpunkt)
+    page = _page_from_lines(["Name und Anschrift der Behörde. Weitere Angaben"])
+    match = MockOCRModel()._match_field_in_pages(_label("Name"), [page])
+    assert match.value == "und Anschrift der Behörde"
+
+
+def test_fuzzy_label_tolerates_ocr_misread():
+    # Echter docTR-Fehler: "gewünscht" als "gewinscht" gelesen
+    page = PageData(lines=[_row(["Absicherung Bauleistung gewinscht ?", "Ja"])])
+    patterns = _checkbox_robust("Absicherung Bauleistung gewünscht?")
+    match = MockOCRModel()._match_field_in_pages(patterns, [page])
+    assert match.match_status == "matched"
+    assert match.value == "Ja"
+    assert match.confidence < 1.0  # unscharfer Treffer wird abgewertet
+
+
+def test_exact_label_wins_over_fuzzy():
+    page = PageData(lines=[_row(["Absicherung Bauleistung gewünscht ?", "Ja"])])
+    patterns = _checkbox_robust("Absicherung Bauleistung gewünscht?")
+    match = MockOCRModel()._match_field_in_pages(patterns, [page])
+    assert match.value == "Ja"
+    assert match.confidence == 1.0
+
+
+def test_fuzzy_does_not_confuse_klausel_codes():
+    # T590080k vs. T590081k unterscheiden sich in einem Zeichen - Codes
+    # dürfen nie unscharf gesucht werden.
+    page = _page_from_lines(["Altbauten gegen Sachschäden gem. Klausel T590081k 10% mind. 2.500 EUR"])
+    match = MockOCRModel()._match_field_in_pages(_klausel_selbstbeteiligung("T590080k"), [page])
+    assert match.match_status != "matched"
+
+
+def test_fuzzy_respects_negative_lookbehind():
+    # Echter Scan: "Grundselbstbeteiligung" darf das Feld
+    # "Selbstbeteiligung" (mit `(?<!grund)`) auch unscharf nicht treffen.
+    page = PageData(lines=[_row(["Grundselbstbeteiligung", "150 EUR"])])
+    pattern = r"(?<!grund)selbstbeteiligung\s*:?\s*([\d.]+\s*EUR)"
+    match = MockOCRModel()._match_field_in_pages([pattern], [page])
+    assert match.match_status != "matched"
+
+
+def test_short_labels_are_never_fuzzy():
+    page = PageData(lines=[_row(["Nane", "Max Muster"])])
+    match = MockOCRModel()._match_field_in_pages(_label("Name"), [page])
+    assert match.match_status != "matched"

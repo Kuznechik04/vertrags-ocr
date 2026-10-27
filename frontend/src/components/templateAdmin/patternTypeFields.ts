@@ -99,6 +99,8 @@ function describeMatch(status: FieldMatchStatus, value: string | null, confidenc
       return "Nicht gefunden.";
     case "no_pattern":
       return "Kein automatisches Muster ausgewählt – nichts zu testen.";
+    case "not_required":
+      return "Nicht erforderlich.";
   }
 }
 

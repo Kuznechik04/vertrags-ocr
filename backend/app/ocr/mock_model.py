@@ -56,6 +56,7 @@ import re
 from dataclasses import dataclass
 
 import pdfplumber
+import regex
 
 from app.core.config import settings
 from app.ocr.base import BaseOCRModel, FieldPrediction, FieldSpec, MatchStatus
@@ -67,6 +68,14 @@ logger = logging.getLogger(__name__)
 # zusätzlich auf OCR auszuweichen (kurze Fragmente deuten auf ein Scan-PDF hin,
 # bei dem pdfplumber nur vereinzelte Artefakte statt echten Text findet).
 MIN_TRUSTED_TEXT_LENGTH = 40
+
+# Horizontale Lücke (relativ zur Seitenbreite) zwischen zwei Wörtern derselben
+# Zeile, ab der sie als Grenze zwischen zwei Tabellenzellen gilt und im
+# durchsuchbaren Text als "\t" statt " " landet (siehe `_match_field_in_pages`).
+# Das MLP-Formular ist tabellarisch (Label-Spalte links, Wert-Spalte rechts) -
+# an zwei echten docTR-Läufen gemessen: Wortabstände INNERHALB einer Zelle
+# lagen bei < 1,2 %, zwischen Label- und Wertzelle bei 1,7-50 %.
+CELL_GAP_THRESHOLD = 0.02
 
 
 _easyocr_reader = None
@@ -252,6 +261,98 @@ def _pattern_anchor_prefix(pattern: str) -> str:
             return pattern[:i]
         i += 1
     return pattern  # keine Gruppe gefunden (Sonderfall bei frei getipptem Regex)
+
+
+def _candidate_from_match(
+    match, pattern_index: int, page_number: int, joined_text: str, spans: list[tuple[int, int, Word]], pattern: str
+) -> _Candidate | None:
+    """Bildet einen Regex-Treffer (Werte-Gruppe 1) auf die abgedeckten Wörter
+    ab und baut daraus Wert, Bounding-Box und Konfidenz."""
+    group_start, group_end = match.span(1)
+    covered_words = [w for (s, e, w) in spans if s < group_end and e > group_start]
+    if not covered_words:
+        return None
+
+    value = joined_text[group_start:group_end].strip(" .:\t")
+    if not value:
+        return None
+
+    x0 = min(w.x0 for w in covered_words)
+    top = min(w.top for w in covered_words)
+    bbox = (x0, top, max(w.x1 for w in covered_words) - x0, max(w.bottom for w in covered_words) - top)
+
+    confidence = round(_average_word_confidence(covered_words), 4)
+    if _is_generic_freitext_pattern(pattern):
+        confidence = round(confidence * _FREITEXT_CONFIDENCE_DISCOUNT, 4)
+    return _Candidate(
+        pattern_index=pattern_index, page_number=page_number, value=value, confidence=confidence, bbox=bbox
+    )
+
+
+# Unscharfe Label-Suche (Stufe 1b in `_match_field_in_pages`): OCR liest
+# Labels in Scans regelmäßig mit einzelnen falschen Zeichen - an echten
+# docTR-Läufen beobachtet u.a. "gewinscht" (gewünscht), "Ber@cksichtigung",
+# "Gefahrerhôhung", "inJ Jahren". Der exakte Anker scheitert dann komplett,
+# obwohl der Wert dahinter sauber gelesen wurde.
+#
+# Fehlerbudget nach Anzahl BUCHSTABEN im Anker (Ziffern zählen bewusst nicht):
+# Klausel-Codes wie "T590080k"/"T590081k" unterscheiden sich in nur einem
+# Zeichen - ein Fehlerbudget dort würde die Codes miteinander verwechseln.
+# Kurze Labels ("Name", "IBAN", "PLZ Risikoort") bleiben exakt, weil ein
+# Fehler dort schon ein ganz anderes Wort trifft.
+_FUZZY_MIN_LETTERS = 12
+_FUZZY_LETTERS_PER_ERROR = 12
+_FUZZY_MAX_ERRORS = 3
+# Unscharfer Treffer = Label nicht exakt gelesen -> geringere Sicherheit,
+# damit der Prüfer im Review genauer hinsieht.
+_FUZZY_CONFIDENCE_DISCOUNT = 0.8
+# Schutz gegen Laufzeit-Ausreißer: unscharfe Suche ist teurer als exakte.
+_FUZZY_TIMEOUT_SECONDS = 2.0
+_REGEX_CLASS_ESCAPE = re.compile(r"\\[sSdDwWbBnt]")
+
+
+def _fuzzy_anchor_pattern(pattern: str) -> str | None:
+    """Liefert `pattern` mit unscharf (Fehlertoleranz `{e<=n}` des
+    `regex`-Pakets) gesuchtem Anker-Teil - die Werte-Gruppe bleibt exakt,
+    damit ein OCR-Fehler im Label nicht auch noch einen falschen Wert
+    zulässt. `None`, wenn der Anker zu kurz/codeartig ist (siehe oben) oder
+    einen Abschnitts-Scope (`.*?`, siehe `_scoped_label`) enthält: dort
+    würde die Fehlertoleranz über beliebig langen Text gestreckt.
+
+    Ebenfalls `None` bei Lookarounds im Anker (`(?<!grund)selbstbeteiligung`,
+    `not_followed_by` in `_scoped_label`): das sind bewusste Ausschlüsse
+    bekannter Kollisionen, die eine Fehlertoleranz umgehen würde - an einem
+    echten Scan nachgewiesen, dass "Grundselbstbeteiligung" sonst über ein
+    als "eingefügt" gewertetes "d" doch matchte. Aus demselben Grund muss
+    der Treffer an einer Wortgrenze beginnen (`(?<!\\w)` außerhalb der
+    unscharfen Gruppe), statt mitten in einem längeren Wort."""
+    anchor = _pattern_anchor_prefix(pattern)
+    value_part = pattern[len(anchor):]
+    if not anchor or anchor == pattern or ".*?" in anchor:
+        return None
+    if any(look in anchor for look in ("(?<!", "(?<=", "(?!", "(?=")):
+        return None
+    letters = sum(ch.isalpha() for ch in _REGEX_CLASS_ESCAPE.sub("", anchor))
+    if letters < _FUZZY_MIN_LETTERS:
+        return None
+    max_errors = min(_FUZZY_MAX_ERRORS, letters // _FUZZY_LETTERS_PER_ERROR)
+    # `\s*` zwischen den Label-Zeichen (siehe `mlp_template._escape_label`)
+    # darf unscharf keinen Zeilenumbruch überbrücken: zusammen mit einem als
+    # "gelöscht" gewerteten letzten Zeichen würde das Label sonst erst auf der
+    # nächsten Zeile "enden" und deren Text als Wert einfangen. Über zwei
+    # Zeilen umbrochene Labels bleiben damit der exakten Suche vorbehalten.
+    anchor = anchor.replace(r"\s*", r"[ ]*")
+    # `(?!(?<=\w)\w)` = Anker endet nicht mitten in einem Wort: sonst
+    # "löscht" die Fehlertoleranz das Label-Ende und die Werte-Gruppe fängt
+    # den Rest des Labels als Wert ein ("Versicherungsort/ Risikoo" + "rt").
+    # `:[^\n\t]` = ein Fehler darf nie einen Zeilenumbruch/eine Zellgrenze
+    # einbeziehen - sonst überbrückt die Toleranz genau die Zeilengrenze, die
+    # `mlp_template._SAME_LINE_SEP` bewusst nicht überschreitet (leeres Feld
+    # würde den Text der nächsten Zeile als Wert einfangen).
+    return (
+        rf"(?<!\w)(?:{_fold_umlauts(anchor)}){{e<={max_errors}:[^\n\t]}}(?!(?<=\w)\w)"
+        + _fold_umlauts(value_part)
+    )
 
 
 class MockOCRModel(BaseOCRModel):
@@ -683,7 +784,12 @@ class MockOCRModel(BaseOCRModel):
                     cursor += 1
                 for word_index, word in enumerate(line):
                     if word_index > 0:
-                        joined_parts.append(" ")
+                        # Zellgrenze als "\t" erhalten statt sie zu einem
+                        # Leerzeichen zu glätten, damit Wertmuster wie
+                        # `mlp_template.TEXT` an der Zelle enden statt in die
+                        # Nachbarzelle weiterzulesen (siehe CELL_GAP_THRESHOLD).
+                        gap = word.x0 - line[word_index - 1].x1
+                        joined_parts.append("\t" if gap >= CELL_GAP_THRESHOLD else " ")
                         cursor += 1
                     start = cursor
                     joined_parts.append(word.text)
@@ -697,82 +803,12 @@ class MockOCRModel(BaseOCRModel):
         # pro Dokument vernachlässigbar teuer), statt beim ersten Treffer
         # zurückzukehren - so lässt sich erkennen, wenn verschiedene Muster
         # auf unterschiedliche Werte kommen (siehe `ambiguous` in FieldMatch).
-        candidates: list[_Candidate] = []
-        for pattern_index, pattern in enumerate(patterns):
-            for page_number, (joined_text, joined_lower, spans) in enumerate(page_texts, start=1):
-                if not joined_lower:
-                    continue
-
-                try:
-                    # DOTALL zusätzlich zu IGNORECASE: manche Muster (siehe
-                    # `_scoped_label` in mlp_template.py) verlangen bewusst
-                    # einen Kontext-Anker VOR dem eigentlichen Label (z.B.
-                    # "Gibt es einen abweichenden Kontoinhaber? ... Name"), um
-                    # ein generisches Label wie "Name" nicht versehentlich auf
-                    # den gleichnamigen Wert eines anderen Formularabschnitts
-                    # matchen zu lassen. Ohne DOTALL würde das dazwischen
-                    # liegende `.*?` an jedem Zeilenumbruch ("\n" zwischen
-                    # Formularzeilen, siehe oben) abbrechen. Alle bestehenden
-                    # Wert-Muster grenzen sich ohnehin explizit über `[^\n...]`
-                    # statt über das implizite "kein Zeilenumbruch"-Verhalten
-                    # von `.` ab, DOTALL ändert also nichts an deren Reichweite.
-                    match = re.search(pattern, joined_lower, flags=re.IGNORECASE | re.DOTALL)
-                    if not match:
-                        # Fallback: OCR lässt Umlaut-Punkte bei manchen
-                        # Scans/Schriftarten weg (siehe _fold_umlauts) - erst
-                        # nach der direkten Suche versuchen, damit ein
-                        # korrekt erkannter Umlaut Vorrang hat. Die Faltung
-                        # ist 1:1 zeichentreu, `match.span(1)` bleibt also
-                        # gegenüber `spans`/`joined_text` (unverändert, ohne
-                        # Faltung) gültig.
-                        match = re.search(
-                            _fold_umlauts(pattern),
-                            _fold_umlauts(joined_lower),
-                            flags=re.IGNORECASE | re.DOTALL,
-                        )
-                except re.error:
-                    # Frei getipptes Admin-Regex kann syntaktisch kaputt sein
-                    # (Speichern validiert das inzwischen, siehe
-                    # app.schemas.template, aber ältere/direkt in der DB
-                    # angelegte Muster könnten das umgehen) - dieses Muster
-                    # einfach überspringen statt den ganzen Upload mit einem
-                    # unbehandelten re.error abstürzen zu lassen.
-                    continue
-                if not match:
-                    continue
-
-                group_start, group_end = match.span(1)
-                covered_words = [w for (s, e, w) in spans if s < group_end and e > group_start]
-                if not covered_words:
-                    continue
-
-                value = joined_text[group_start:group_end].strip(" .:")
-                if not value:
-                    continue
-
-                bbox = (
-                    min(w.x0 for w in covered_words),
-                    min(w.top for w in covered_words),
-                    0.0,
-                    0.0,
-                )
-                max_x1 = max(w.x1 for w in covered_words)
-                max_bottom = max(w.bottom for w in covered_words)
-                bbox = (bbox[0], bbox[1], max_x1 - bbox[0], max_bottom - bbox[1])
-
-                confidence = round(_average_word_confidence(covered_words), 4)
-                if _is_generic_freitext_pattern(pattern):
-                    confidence = round(confidence * _FREITEXT_CONFIDENCE_DISCOUNT, 4)
-
-                candidates.append(
-                    _Candidate(
-                        pattern_index=pattern_index,
-                        page_number=page_number,
-                        value=value,
-                        confidence=confidence,
-                        bbox=bbox,
-                    )
-                )
+        candidates = self._collect_candidates(patterns, page_texts, fuzzy=False)
+        if not candidates:
+            # Stufe 1b: Anker unscharf (OCR-Lesefehler im Label, siehe
+            # `_fuzzy_anchor_pattern`) - nur, wenn exakt gar nichts gefunden
+            # wurde, damit ein sauber gelesenes Label immer Vorrang hat.
+            candidates = self._collect_candidates(patterns, page_texts, fuzzy=True)
 
         if candidates:
             # Frühere Muster gelten als spezifischer/vertrauenswürdiger (die
@@ -814,3 +850,84 @@ class MockOCRModel(BaseOCRModel):
                     continue
 
         return FieldMatch(value=None, confidence=0.0, page=1, bbox=None, match_status="field_not_found")
+
+    @staticmethod
+    def _collect_candidates(
+        patterns: list[str],
+        page_texts: list[tuple[str, str, list[tuple[int, int, Word]]]],
+        fuzzy: bool,
+    ) -> list[_Candidate]:
+        candidates: list[_Candidate] = []
+        for pattern_index, pattern in enumerate(patterns):
+            fuzzy_pattern = _fuzzy_anchor_pattern(pattern) if fuzzy else None
+            if fuzzy and fuzzy_pattern is None:
+                continue
+            for page_number, (joined_text, joined_lower, spans) in enumerate(page_texts, start=1):
+                if not joined_lower:
+                    continue
+
+                if fuzzy_pattern is not None:
+                    try:
+                        # Umlaut-gefaltet wie der Fallback unten, damit ein
+                        # fehlender Umlaut-Punkt nicht schon das Fehlerbudget
+                        # verbraucht. BESTMATCH: sonst nimmt `regex` den
+                        # ERSTEN Treffer innerhalb des Budgets, auch wenn
+                        # weiter hinten das Label fehlerfrei(er) steht.
+                        match = regex.search(
+                            fuzzy_pattern,
+                            _fold_umlauts(joined_lower),
+                            flags=regex.IGNORECASE | regex.DOTALL | regex.BESTMATCH,
+                            timeout=_FUZZY_TIMEOUT_SECONDS,
+                        )
+                    except (regex.error, TimeoutError):
+                        continue
+                    if not match:
+                        continue
+                    candidate = _candidate_from_match(match, pattern_index, page_number, joined_text, spans, pattern)
+                    if candidate is not None:
+                        candidate.confidence = round(candidate.confidence * _FUZZY_CONFIDENCE_DISCOUNT, 4)
+                        candidates.append(candidate)
+                    continue
+
+                try:
+                    # DOTALL zusätzlich zu IGNORECASE: manche Muster (siehe
+                    # `_scoped_label` in mlp_template.py) verlangen bewusst
+                    # einen Kontext-Anker VOR dem eigentlichen Label (z.B.
+                    # "Gibt es einen abweichenden Kontoinhaber? ... Name"), um
+                    # ein generisches Label wie "Name" nicht versehentlich auf
+                    # den gleichnamigen Wert eines anderen Formularabschnitts
+                    # matchen zu lassen. Ohne DOTALL würde das dazwischen
+                    # liegende `.*?` an jedem Zeilenumbruch ("\n" zwischen
+                    # Formularzeilen, siehe oben) abbrechen. Alle bestehenden
+                    # Wert-Muster grenzen sich ohnehin explizit über `[^\n...]`
+                    # statt über das implizite "kein Zeilenumbruch"-Verhalten
+                    # von `.` ab, DOTALL ändert also nichts an deren Reichweite.
+                    match = re.search(pattern, joined_lower, flags=re.IGNORECASE | re.DOTALL)
+                    if not match:
+                        # Fallback: OCR lässt Umlaut-Punkte bei manchen
+                        # Scans/Schriftarten weg (siehe _fold_umlauts) - erst
+                        # nach der direkten Suche versuchen, damit ein
+                        # korrekt erkannter Umlaut Vorrang hat. Die Faltung
+                        # ist 1:1 zeichentreu, `match.span(1)` bleibt also
+                        # gegenüber `spans`/`joined_text` (unverändert, ohne
+                        # Faltung) gültig.
+                        match = re.search(
+                            _fold_umlauts(pattern),
+                            _fold_umlauts(joined_lower),
+                            flags=re.IGNORECASE | re.DOTALL,
+                        )
+                except re.error:
+                    # Frei getipptes Admin-Regex kann syntaktisch kaputt sein
+                    # (Speichern validiert das inzwischen, siehe
+                    # app.schemas.template, aber ältere/direkt in der DB
+                    # angelegte Muster könnten das umgehen) - dieses Muster
+                    # einfach überspringen statt den ganzen Upload mit einem
+                    # unbehandelten re.error abstürzen zu lassen.
+                    continue
+                if not match:
+                    continue
+
+                candidate = _candidate_from_match(match, pattern_index, page_number, joined_text, spans, pattern)
+                if candidate is not None:
+                    candidates.append(candidate)
+        return candidates

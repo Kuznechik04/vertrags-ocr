@@ -1,4 +1,4 @@
-export type FieldMatchStatus = "matched" | "field_not_found" | "data_not_found" | "no_pattern";
+export type FieldMatchStatus = "matched" | "field_not_found" | "data_not_found" | "no_pattern" | "not_required";
 
 export interface ContractField {
   id: string;
