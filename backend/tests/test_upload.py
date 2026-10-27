@@ -1,6 +1,8 @@
 import io
 from pathlib import Path
 
+from app.core.config import settings
+
 SAMPLE_PDF = Path(__file__).resolve().parents[2] / "test_samples" / "vertrag_vorlage.pdf"
 
 
@@ -44,6 +46,15 @@ def test_upload_accepts_real_pdf(client):
 
     assert response.status_code == 200
     assert response.json()["content_type"] == "application/pdf"
+    document_id = response.json()["id"]
+    ocr_text_path = settings.upload_dir / f"{document_id}.txt"
+    assert ocr_text_path.is_file()
+    assert ocr_text_path.read_text(encoding="utf-8").strip()
+
+    text_response = client.get(f"/api/documents/{document_id}/ocr-text", headers=headers)
+    assert text_response.status_code == 200
+    assert text_response.headers["content-type"].startswith("text/plain")
+    assert text_response.text == ocr_text_path.read_text(encoding="utf-8")
 
 
 def test_upload_rejects_oversized_file(client, monkeypatch):

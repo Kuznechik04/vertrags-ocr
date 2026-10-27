@@ -182,5 +182,8 @@ export const api = {
   exportDocumentXlsx: (id: string, filename: string) =>
     downloadFile(`/api/documents/${id}/export/xlsx`, filename),
 
+  downloadOcrText: (id: string, filename: string) =>
+    downloadFile(`/api/documents/${id}/ocr-text`, filename),
+
   exportAllXlsx: () => downloadFile("/api/documents/export/xlsx", "vertraege_export.xlsx"),
 };

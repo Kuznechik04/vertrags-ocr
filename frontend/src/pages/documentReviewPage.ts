@@ -15,6 +15,7 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
   let drawingFieldId: string | null = null;
   let finalizeError: string | null = null;
   let exportError: string | null = null;
+  let ocrTextError: string | null = null;
   let exporting = false;
   let preview: ReturnType<typeof createDocumentPreview> | null = null;
 
@@ -93,6 +94,14 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
       h(
         "button",
         {
+          class: "secondary-btn",
+          onclick: () => handleOcrTextDownload(),
+        },
+        "OCR-Text herunterladen"
+      ),
+      h(
+        "button",
+        {
           class: "primary-btn",
           disabled: !allValidated || doc.status === "reviewed",
           onclick: () => handleFinalize(),
@@ -104,6 +113,7 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
     errorSlot.replaceChildren();
     if (finalizeError) errorSlot.appendChild(h("div", { class: "error-banner" }, finalizeError));
     if (exportError) errorSlot.appendChild(h("div", { class: "error-banner" }, exportError));
+    if (ocrTextError) errorSlot.appendChild(h("div", { class: "error-banner" }, ocrTextError));
   }
 
   function updateBody(): void {
@@ -135,6 +145,19 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
       exportError = err instanceof Error ? err.message : "Export fehlgeschlagen";
     } finally {
       exporting = false;
+      updateToolbar();
+    }
+  }
+
+  async function handleOcrTextDownload(): Promise<void> {
+    if (!doc) return;
+    ocrTextError = null;
+    updateToolbar();
+    try {
+      const base = doc.filename.replace(/\.[^.]+$/, "") || "vertrag";
+      await api.downloadOcrText(id, `${base}_ocr.txt`);
+    } catch (err) {
+      ocrTextError = err instanceof Error ? err.message : "OCR-Text konnte nicht heruntergeladen werden";
       updateToolbar();
     }
   }

@@ -32,11 +32,14 @@ def test_delete_document_removes_file_from_disk(client):
         )
     doc_id = upload_response.json()["id"]
     dest_path = settings.upload_dir / f"{doc_id}.pdf"
+    ocr_text_path = settings.upload_dir / f"{doc_id}.txt"
     assert dest_path.exists()
+    assert ocr_text_path.exists()
 
     delete_response = client.delete(f"/api/documents/{doc_id}", headers=headers)
     assert delete_response.status_code == 204
     assert not dest_path.exists()
+    assert not ocr_text_path.exists()
 
     get_response = client.get(f"/api/documents/{doc_id}", headers=headers)
     assert get_response.status_code == 404

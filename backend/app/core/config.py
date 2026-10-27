@@ -31,9 +31,12 @@ class Settings(BaseSettings):
     ocr_backend: str = "mock"
     model_path: str = "./training/output/contract-donut"
 
-    # Nur relevant für ocr_backend="mock": welche OCR-Engine für gescannte
-    # PDFs/Bild-Uploads genutzt wird (die eingebettete PDF-Textebene läuft
-    # davon unabhängig immer über pdfplumber).
+    # Nur relevant für ocr_backend="mock": standardmäßig auch bei PDFs mit
+    # eingebetteter Textebene OCR ausführen. Auf False setzen, um zuerst die
+    # PDF-Textebene zu verwenden und OCR nur als Fallback zu nutzen.
+    mock_ocr_always: bool = True
+    # OCR-Engine für gescannte PDFs/Bild-Uploads und, wenn mock_ocr_always
+    # aktiviert ist, für alle PDF-/Bild-Uploads.
     # "doctr"     -> Standard, reines pip-Paket, kein natives Programm nötig.
     #                Beste Genauigkeit bei gedrucktem Text der drei Optionen,
     #                unterstützt Deutsch (inkl. Umlaute) direkt.

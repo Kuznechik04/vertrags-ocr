@@ -39,6 +39,13 @@ class DonutOCRModel(BaseOCRModel):
                 return doc.page_count
         return 1
 
+    def extract_text(self, file_path: str) -> str:
+        # Donut generiert Feldwerte, aber keinen vollständigen OCR-Text.
+        # Für das Textdokument dieselbe Texterkennung wie im Mock-Backend nutzen.
+        from app.ocr.mock_model import MockOCRModel
+
+        return MockOCRModel().extract_text(file_path)
+
     def predict(
         self, file_path: str, fields: list[FieldSpec], template_key: str | None = None
     ) -> list[FieldPrediction]:

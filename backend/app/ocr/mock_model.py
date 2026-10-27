@@ -270,7 +270,21 @@ class MockOCRModel(BaseOCRModel):
         # Decoder-Prompt pro Vertragstyp, siehe donut_model.py).
         max_pages = RELEVANT_PAGE_COUNT if template_key == "mlp_bauantrag" else None
         pages = self._extract_pages(file_path, max_pages=max_pages)
+        return self._predict_from_pages(fields, pages)
 
+    def predict_with_text(
+        self, file_path: str, fields: list[FieldSpec], template_key: str | None = None
+    ) -> tuple[list[FieldPrediction], str]:
+        pages = self._extract_pages(file_path)
+        prediction_pages = pages
+        if template_key == "mlp_bauantrag":
+            prediction_pages = pages[:RELEVANT_PAGE_COUNT]
+        return self._predict_from_pages(fields, prediction_pages), self._pages_to_text(pages)
+
+    def extract_text(self, file_path: str) -> str:
+        return self._pages_to_text(self._extract_pages(file_path))
+
+    def _predict_from_pages(self, fields: list[FieldSpec], pages: list[PageData]) -> list[FieldPrediction]:
         predictions: list[FieldPrediction] = []
         for field in fields:
             match = self._match_field_in_pages(field.patterns or [], pages)
@@ -287,6 +301,14 @@ class MockOCRModel(BaseOCRModel):
                 )
             )
         return predictions
+
+    @staticmethod
+    def _pages_to_text(pages: list[PageData]) -> str:
+        return "\n\n".join(
+            f"--- Seite {page_number} ---\n"
+            + "\n".join(" ".join(word.text for word in line) for line in page.lines)
+            for page_number, page in enumerate(pages, start=1)
+        )
 
     def preview_match(self, file_path: str, patterns: list[str]) -> FieldMatch:
         """Testet Kandidaten-Muster gegen eine (i.d.R. temporäre) Beispieldatei,
@@ -328,15 +350,17 @@ class MockOCRModel(BaseOCRModel):
     def _extract_pages(self, file_path: str, max_pages: int | None = None) -> list[PageData]:
         is_pdf = file_path.lower().endswith(".pdf")
 
+        if settings.mock_ocr_always:
+            return self._extract_pages_via_ocr(file_path, is_pdf, max_pages=max_pages)
+
         pdf_pages = self._extract_pages_via_pdfplumber(file_path, max_pages=max_pages) if is_pdf else []
         total_chars = sum(len(w.text) for page in pdf_pages for line in page.lines for w in line)
 
         if total_chars >= MIN_TRUSTED_TEXT_LENGTH:
             return pdf_pages
 
-        # Kein/kaum Text gefunden -> vermutlich gescanntes PDF oder direkt ein
-        # Bild-Upload. Fallback auf Tesseract-OCR (liefert Wortpositionen als Pixel,
-        # die wir ebenfalls auf 0..1 normieren).
+        # Kein/kaum PDF-Text gefunden -> vermutlich ein Scan. OCR liefert
+        # Wortpositionen, die ebenfalls auf 0..1 normiert werden.
         ocr_pages = self._extract_pages_via_ocr(file_path, is_pdf, max_pages=max_pages)
         if any(page.lines for page in ocr_pages):
             return ocr_pages
@@ -401,10 +425,47 @@ class MockOCRModel(BaseOCRModel):
 
         engine = (settings.mock_ocr_engine or "doctr").lower()
         if engine == "tesseract":
-            return self._ocr_pages_with_tesseract(images)
-        if engine == "easyocr":
-            return self._ocr_pages_with_easyocr(images)
-        return self._ocr_pages_with_doctr(images)
+            pages = self._ocr_pages_with_tesseract(images)
+        elif engine == "easyocr":
+            pages = self._ocr_pages_with_easyocr(images)
+        else:
+            pages = self._ocr_pages_with_doctr(images)
+        return [
+            PageData(lines=self._merge_same_row_lines(page.lines))
+            for page in pages
+        ]
+
+    @staticmethod
+    def _merge_same_row_lines(lines: list[list[Word]]) -> list[list[Word]]:
+        """Fügt OCR-Zeilen aus getrennten Tabellenzellen zusammen, wenn ihre
+        Wortboxen auf derselben horizontalen Grundlinie liegen."""
+        measured_lines: list[tuple[float, float, float, list[Word]]] = []
+        for line in lines:
+            if not line:
+                continue
+            top = min(word.top for word in line)
+            bottom = max(word.bottom for word in line)
+            measured_lines.append(((top + bottom) / 2, top, bottom, line))
+
+        measured_lines.sort(key=lambda item: (item[0], min(word.x0 for word in item[3])))
+        rows: list[list[tuple[float, float, float, list[Word]]]] = []
+        for measured_line in measured_lines:
+            center, top, bottom, _line = measured_line
+            if rows:
+                row = rows[-1]
+                row_center = sum(item[0] for item in row) / len(row)
+                row_height = max(item[2] - item[1] for item in row)
+                line_height = bottom - top
+                if abs(center - row_center) <= max(row_height, line_height) * 0.45:
+                    row.append(measured_line)
+                    continue
+            rows.append([measured_line])
+
+        merged_rows: list[list[Word]] = []
+        for row in rows:
+            merged_words = [word for _center, _top, _bottom, line in row for word in line]
+            merged_rows.append(sorted(merged_words, key=lambda word: word.x0))
+        return merged_rows
 
     def _load_images(
         self, file_path: str, is_pdf: bool, max_pages: int | None = None

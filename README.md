@@ -26,6 +26,11 @@ vertrags-ocr/
    - `donut`: ein auf euren Verträgen fine-getuntes
      [Donut](https://huggingface.co/naver-clova-ix/donut-base)-Modell, das Bilder
      direkt in strukturiertes JSON übersetzt.
+   Zusätzlich wird der erkannte Dokumenttext mit Seitenmarkierungen neben der
+   hochgeladenen Datei gespeichert und kann in der Dokumentprüfung über
+   **OCR-Text herunterladen** als `{Dokumentname}_ocr.txt` heruntergeladen
+   werden. Bei Donut wird dafür dieselbe Text-/OCR-Extraktion wie beim
+   Mock-Backend verwendet.
 3. Erkannte Felder (Vertragsnummer, Vertragspartner, Laufzeit, Kündigungsfrist,
    Betrag, …) werden mit Konfidenzwert in der DB gespeichert.
 4. Im Frontend sieht der Nutzer das Dokument neben der Feldliste, kann jedes Feld
@@ -89,8 +94,9 @@ Die App unterstützt mehrere Nutzerkonten mit E-Mail/Passwort-Login (JWT-Token):
 - Python 3.11+
 - Node.js 20+
 - Für das Fine-Tuning idealerweise eine GPU (CPU-Training ist möglich, aber langsam)
-- Für das Mock-Backend bei gescannten PDFs/Bild-Uploads: Standardmäßig läuft
-  OCR über **docTR** (`MOCK_OCR_ENGINE=doctr` in `backend/.env`, siehe
+- Für das Mock-Backend läuft OCR standardmäßig bei **allen Uploads** über
+  **docTR** (`MOCK_OCR_ALWAYS=true` und `MOCK_OCR_ENGINE=doctr` in
+  `backend/.env`, siehe
   `.env.example`) – ein reines `pip`-Paket, es ist **kein** zusätzliches
   Systemprogramm nötig, `pip install -r requirements.txt` reicht. Beste
   Genauigkeit bei gedrucktem Text der drei verfügbaren Optionen, deutsche
@@ -102,6 +108,12 @@ Die App unterstützt mehrere Nutzerkonten mit E-Mail/Passwort-Login (JWT-Token):
   OCR-Lauf durchlaufen alle Bilder außerdem eine leichte, engine-
   unabhängige Aufbereitung (Hochskalierung kleiner Bilder, Kontrast,
   Schärfen), die besonders bei unscharfen/kontrastarmen Scans hilft.
+  Mit `MOCK_OCR_ALWAYS=false` lässt sich das bisherige Verhalten
+  wiederherstellen: Bei PDFs mit Textebene wird zuerst der eingebettete Text
+  verwendet und OCR nur bei fehlendem/zu kurzem Text gestartet.
+  Zeilen-Ergebnisse aus getrennten OCR-Blöcken werden anhand ihrer vertikalen
+  Position zusammengeführt, damit Tabelleninhalte aus nebeneinanderliegenden
+  Zellen als gemeinsame Textzeile erkannt werden.
 
   Alternativ stehen per `MOCK_OCR_ENGINE=...` zwei weitere Engines zur
   Wahl:

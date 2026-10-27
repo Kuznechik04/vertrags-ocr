@@ -322,7 +322,7 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("feuerrohbau", "Feuerrohbau", _checkbox_robust("Feuerrohbau")),
     ("altbauten_sachschaeden_t590080k", "Mitversicherung von Altbauten gegen Sachschäden ... (Klausel T590080k)", _klausel_status("T590080k")),
     ("ausstattung_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert (Klausel T512807u)", _klausel_status("T512807u")),
-    ("altbau_brand_t512805u", "Brand, Blitzschlag, Explosion für den Altbau (Klausel T512805u)", _klausel_status("T512805u")),
+    ("altbau_brand_t512805u", "Brand, Blitzschlag, Explosion für den Altbau (Klausel T512805u)", _klausel_status("(T512805u)")),
     ("pfahl_brunnen_senkkasten", "Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", _robust(_label("Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", SELBSTBETEILIGUNG, "Baugrundverbesserung"), "Baugrundverbesserung", SELBSTBETEILIGUNG)),
     ("baugrubenumschliessung", "Baugrubenumschließung", _robust(_label("Baugrubenumschließung", SELBSTBETEILIGUNG), "Baugrubenumschließung", SELBSTBETEILIGUNG)),
     ("wasserhaltung", "Wasserhaltung", _robust(_label("Wasserhaltung", SELBSTBETEILIGUNG), "Wasserhaltung", SELBSTBETEILIGUNG)),

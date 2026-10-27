@@ -97,7 +97,10 @@ def _run_ocr(document: Document, db: Session) -> None:
         FieldSpec(field_key=f.field_key, field_label=f.field_label, patterns=f.patterns)
         for f in document.template.fields
     ]
-    predictions = model.predict(document.file_path, fields, template_key=document.template.key)
+    predictions, ocr_text = model.predict_with_text(
+        document.file_path, fields, template_key=document.template.key
+    )
+    Path(document.file_path).with_suffix(".txt").write_text(ocr_text, encoding="utf-8")
 
     for pred in predictions:
         bbox_x = bbox_y = bbox_w = bbox_h = None
@@ -232,6 +235,22 @@ def get_document_file(
     )
 
 
+@router.get("/{document_id}/ocr-text")
+def get_document_ocr_text(
+    document_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    document = _get_owned_document(document_id, user, db)
+    text_path = Path(document.file_path).with_suffix(".txt")
+    if not text_path.is_file():
+        raise HTTPException(404, "OCR-Text für dieses Dokument nicht gefunden")
+    filename = Path(document.filename).stem or "vertrag"
+    return FileResponse(
+        text_path,
+        media_type="text/plain; charset=utf-8",
+        filename=f"{filename}_ocr.txt",
+    )
+
+
 @router.put("/{document_id}/fields/{field_id}", response_model=DocumentDetailOut)
 def update_field(
     document_id: str,
@@ -298,5 +317,6 @@ def finalize_document(document_id: str, user: User = Depends(get_current_user), 
 def delete_document(document_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     document = _get_owned_document(document_id, user, db)
     Path(document.file_path).unlink(missing_ok=True)
+    Path(document.file_path).with_suffix(".txt").unlink(missing_ok=True)
     db.delete(document)
     db.commit()

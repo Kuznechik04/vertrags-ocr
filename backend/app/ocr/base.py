@@ -66,5 +66,18 @@ class BaseOCRModel:
         bekommt den nötigen Kontext bereits vollständig über `fields`."""
         raise NotImplementedError
 
+    def extract_text(self, file_path: str) -> str:
+        """Liefert den erkannten Dokumenttext mit Seitenumbrüchen."""
+        raise NotImplementedError
+
+    def predict_with_text(
+        self, file_path: str, fields: list[FieldSpec], template_key: str | None = None
+    ) -> tuple[list[FieldPrediction], str]:
+        """Führt die Feld-Erkennung aus und liefert zusätzlich den OCR-Text."""
+        return (
+            self.predict(file_path, fields, template_key=template_key),
+            self.extract_text(file_path),
+        )
+
     def page_count(self, file_path: str) -> int:
         return 1

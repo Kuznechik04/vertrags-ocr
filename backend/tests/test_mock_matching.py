@@ -1,6 +1,8 @@
 """Unit-Tests direkt gegen MockOCRModel._match_field_in_pages, ohne über die
 HTTP-API zu gehen - schneller und präziser für die Matching-/Scoring-Logik
 selbst (Kandidaten-Sammlung, Mehrdeutigkeits-Erkennung, re.error-Robustheit)."""
+import pytest
+
 from app.ocr.mock_model import MockOCRModel, PageData, Word
 from app.ocr.mlp_template import (
     ANTRAGSTELLER_ANCHOR,
@@ -45,6 +47,65 @@ def _page_from_lines(lines: list[str]) -> PageData:
             x += 0.03
         plines.append(words)
     return PageData(lines=plines)
+
+
+def test_extract_pages_uses_ocr_when_always_enabled(monkeypatch):
+    from app.ocr import mock_model
+
+    model = MockOCRModel()
+    ocr_pages = [_page_from_lines(["OCR text"])]
+    monkeypatch.setattr(mock_model.settings, "mock_ocr_always", True)
+    monkeypatch.setattr(
+        model,
+        "_extract_pages_via_ocr",
+        lambda file_path, is_pdf, max_pages=None: ocr_pages,
+    )
+    monkeypatch.setattr(
+        model,
+        "_extract_pages_via_pdfplumber",
+        lambda file_path, max_pages=None: pytest.fail("PDF text layer should be skipped"),
+    )
+
+    assert model._extract_pages("document.pdf") == ocr_pages
+
+
+def test_extract_pages_uses_pdf_text_when_always_disabled(monkeypatch):
+    from app.ocr import mock_model
+
+    model = MockOCRModel()
+    pdf_pages = [_page_from_lines(["PDF text with enough characters to trust"])]
+    monkeypatch.setattr(mock_model.settings, "mock_ocr_always", False)
+    monkeypatch.setattr(
+        model,
+        "_extract_pages_via_pdfplumber",
+        lambda file_path, max_pages=None: pdf_pages,
+    )
+    monkeypatch.setattr(
+        model,
+        "_extract_pages_via_ocr",
+        lambda *args, **kwargs: pytest.fail("OCR should not run for trusted PDF text"),
+    )
+
+    assert model._extract_pages("document.pdf") == pdf_pages
+
+
+def test_ocr_merges_table_cells_on_same_row_but_keeps_next_row_separate():
+    model = MockOCRModel()
+    left_cell = [_word("Vertragsnummer:", 0.1, 0.10)]
+    right_cell = [_word("123456", 0.6, 0.105)]
+    next_row = [_word("Beginn:", 0.1, 0.16), _word("01.01.2026", 0.3, 0.16)]
+
+    lines = model._merge_same_row_lines([right_cell, next_row, left_cell])
+
+    assert len(lines) == 2
+    assert [word.text for word in lines[0]] == ["Vertragsnummer:", "123456"]
+    assert [word.text for word in lines[1]] == ["Beginn:", "01.01.2026"]
+    match = model._match_field_in_pages(
+        [r"vertragsnummer\s*:?\s*(\d{6})"],
+        [PageData(lines=lines)],
+    )
+    assert match.match_status == "matched"
+    assert match.value == "123456"
 
 
 def test_malformed_pattern_is_skipped_instead_of_crashing():
