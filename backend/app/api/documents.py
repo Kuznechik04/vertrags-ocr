@@ -12,7 +12,7 @@ from app.models.document import ContractField, Document, DocumentStatus
 from app.models.template import ContractTemplate
 from app.models.user import User, UserRole
 from app.ocr.base import FieldSpec
-from app.ocr.mlp_template import MLP_FIELD_DEPENDENCIES, apply_field_dependencies
+from app.ocr.mlp_template import MLP_FIELD_DEPENDENCIES, apply_field_dependencies, normalize_status_values
 from app.ocr.registry import get_ocr_model
 from app.core.security import create_preview_token
 from app.schemas.document import DocumentDetailOut, DocumentOut, FieldUpdate, PreviewTokenOut, TrainingExportRow
@@ -103,6 +103,7 @@ def _run_ocr(document: Document, db: Session) -> None:
     )
     Path(document.file_path).with_suffix(".txt").write_text(ocr_text, encoding="utf-8")
     if document.template.key == "mlp_bauantrag":
+        normalize_status_values(predictions)
         apply_field_dependencies(predictions, MLP_FIELD_DEPENDENCIES)
 
     for pred in predictions:

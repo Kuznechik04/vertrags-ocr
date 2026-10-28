@@ -3,7 +3,7 @@
 import pytest
 
 from app.ocr.base import FieldPrediction
-from app.ocr.mlp_template import MLP_FIELD_DEPENDENCIES, apply_field_dependencies
+from app.ocr.mlp_template import MLP_FIELD_DEPENDENCIES, apply_field_dependencies, normalize_status_values
 
 
 def _pred(key: str, value: str | None, status: str = "matched") -> FieldPrediction:
@@ -51,3 +51,21 @@ def test_children_unchanged_otherwise(parent_value):
     assert by_key["kontoinhaber_name"].match_status == "data_not_found"
     assert by_key["kontoinhaber_firmenname"].value == "Muster GmbH"
     assert by_key["kontoinhaber_firmenname"].match_status == "matched"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("nicht gewinscht", "nicht gewünscht"),
+        ("Nicht  Gewunscht", "nicht gewünscht"),
+        ("gewinscht", "gewünscht"),
+        ("gewünscht", "gewünscht"),
+        ("50.000 EUR", "50.000 EUR"),
+        ("Nein", "Nein"),
+        ("Bauleistung gewünscht und mehr", "Bauleistung gewünscht und mehr"),
+    ],
+)
+def test_normalize_status_values(raw, expected):
+    predictions = [_pred("ausstattung_kunstwert_t512807u", raw)]
+    normalize_status_values(predictions)
+    assert predictions[0].value == expected

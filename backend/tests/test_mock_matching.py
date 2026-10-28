@@ -7,6 +7,7 @@ from app.ocr.mock_model import MockOCRModel, PageData, Word
 from app.ocr.mlp_template import (
     ANTRAGSTELLER_ANCHOR,
     KONTOINHABER_ANCHOR,
+    MLP_FIELDS,
     MONEY,
     TEXT,
     YES_NO,
@@ -279,7 +280,7 @@ def test_klausel_status_handles_value_before_klausel_due_to_line_wrap():
     model = MockOCRModel()
     page = _page_from_lines(_LEISTUNGSBAUSTEINE_TRANSKRIPT)
 
-    match = model._match_field_in_pages(_klausel_status("T590080k"), [page])
+    match = model._match_field_in_pages(_mlp_patterns("altbauten_sachschaeden_t590080k"), [page])
 
     assert match.match_status == "matched"
     assert match.value == "Nein"
@@ -297,7 +298,7 @@ def test_klausel_selbstbeteiligung_does_not_grab_value_from_earlier_klausel():
     model = MockOCRModel()
     page = _page_from_lines(_LEISTUNGSBAUSTEINE_TRANSKRIPT)
 
-    match = model._match_field_in_pages(_klausel_selbstbeteiligung("T512807u"), [page])
+    match = model._match_field_in_pages(_mlp_patterns("altbauten_kunstwert_t512807u"), [page])
 
     assert match.match_status == "matched"
     assert match.value == "10% mind. 500 EUR"
@@ -580,7 +581,8 @@ def test_yes_no_nearby_search_ignores_x_inside_unrelated_word():
     match = model._match_field_in_pages(_klausel_status("T512805u"), [page])
 
     assert match.value != "x"
-    assert match.match_status in ("data_not_found", "field_not_found")
+    # "gewinscht" (docTR) zählt inzwischen als Status, siehe `STATUS_WORD`
+    assert match.value == "nicht gewinscht"
 
 
 def test_versicherungsort_alias_does_not_match_its_own_label_suffix():
@@ -677,3 +679,106 @@ def test_short_labels_are_never_fuzzy():
     page = PageData(lines=[_row(["Nane", "Max Muster"])])
     match = MockOCRModel()._match_field_in_pages(_label("Name"), [page])
     assert match.match_status != "matched"
+
+
+def _mlp_patterns(field_key: str) -> list[str]:
+    return next(patterns for key, _label_text, patterns in MLP_FIELDS if key == field_key)
+
+
+def _t512805u_page(einschluss_wert: str) -> PageData:
+    # Echtes MLP-Transkript: Klausel T512805u kommt zweimal vor - einmal als
+    # Leistungsbaustein (Versicherungssumme), einmal bei den
+    # Selbstbeteiligungen (Prozent + Mindestbetrag).
+    return _page_from_lines(
+        [
+            "- Mitversicherung von aufwendiger Ausstattung/ Bestandteile von unverhältnismäßig hohem Kunstwert nicht gewünscht",
+            "(Klausel T512807u)",
+            f"- Einschluß Brand, Blitzschlag, Explosion für den Altbau (Klausel T512805u) {einschluss_wert}",
+            "- Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung (10.000 EUR beitragsfrei) 10.000 EUR",
+            "- Mitversicherung von aufwendiger Ausstattung/ Bestandteile von unverhältnismäßig hohem Kunstwert 10% mind. 500 EUR",
+            "gem. Klausel T512807u",
+            "- Brand, Blitzschlag, Explosionsschäden für den Altbau gem. Klausel T512805u 10% mind. 1.000 EUR",
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("einschluss_wert", "expected"),
+    [("50.000 EUR", "50.000 EUR"), ("nicht gewünscht", "nicht gewünscht")],
+)
+def test_einschluss_brand_t512805u_reads_summe_not_selbstbeteiligung(einschluss_wert, expected):
+    match = MockOCRModel()._match_field_in_pages(_mlp_patterns("altbau_brand_t512805u"), [_t512805u_page(einschluss_wert)])
+    assert match.match_status == "matched"
+    assert match.value == expected
+
+
+@pytest.mark.parametrize("einschluss_wert", ["50.000 EUR", "nicht gewünscht"])
+def test_selbstbeteiligung_brand_t512805u_ignores_einschluss_summe(einschluss_wert):
+    """Regression-Guard: das Selbstbeteiligungs-Feld griff die Versicherungs-
+    summe aus der Einschluß-Zeile ("(Klausel T512805u) 50.000 EUR") auf,
+    weil der lockere `SELBSTBETEILIGUNG`-Wert auch reine Beträge erlaubt."""
+    match = MockOCRModel()._match_field_in_pages(_mlp_patterns("altbauten_brand_t512805u"), [_t512805u_page(einschluss_wert)])
+    assert match.match_status == "matched"
+    assert match.value == "10% mind. 1.000 EUR"
+    assert not match.ambiguous
+
+
+def test_klausel_status_tolerates_doctr_gewinscht_across_line_break():
+    """Echter docTR-Scan (mlp-neu.pdf): "gewünscht" als "gewinscht" gelesen,
+    Klausel-Verweis in der Folgezeile - das Feld blieb leer, weil
+    `STATUS_WORD` nur "gewünscht" kannte (nicht wegen des Zeilenumbruchs)."""
+    page = _page_from_lines(
+        [
+            "Mitversicherung von aufwendiger Ausstattung/ Bestandteile von unverhaltnismàBig hohem Kunstwert nicht gewinscht",
+            "(Klausel T512807u)",
+            "EinschluB Brand, Blitzschlag, Explosion fur den Altbau (Klausel T512805u) nicht gewinscht",
+        ]
+    )
+    model = MockOCRModel()
+    assert model._match_field_in_pages(_mlp_patterns("ausstattung_kunstwert_t512807u"), [page]).value == "nicht gewinscht"
+    assert model._match_field_in_pages(_mlp_patterns("altbau_brand_t512805u"), [page]).value == "nicht gewinscht"
+
+
+def test_kunstwert_t512807u_summe_stays_in_its_own_field():
+    """Wie bei T512805u: Ausstattung/Kunstwert steht in der Spalte
+    "Versicherungssumme in EUR" UND bei den Selbstbeteiligungen. Eine Summe
+    im Baustein darf weder fehlen noch ins Selbstbeteiligungs-Feld laufen."""
+    page = _page_from_lines(
+        [
+            "Mitversicherung von aufwendiger Ausstattung/ Bestandteile von unverhaltnismàBig hohem Kunstwert 20.000 EUR",
+            "(Klausel T512807u)",
+            "Mit folgenden Selbstbeteiligungen",
+            "Mitversicherung von aufwendiger Ausstattung/ Bestandteile von unverhaltnismàBig hohem Kunstwert 10% mind. 500 EUR",
+            "gem. Klausel T512807u",
+        ]
+    )
+    model = MockOCRModel()
+    baustein = model._match_field_in_pages(_mlp_patterns("ausstattung_kunstwert_t512807u"), [page])
+    sb = model._match_field_in_pages(_mlp_patterns("altbauten_kunstwert_t512807u"), [page])
+    assert (baustein.value, baustein.ambiguous) == ("20.000 EUR", False)
+    assert (sb.value, sb.ambiguous) == ("10% mind. 500 EUR", False)
+
+
+_SELBSTBETEILIGUNGEN_SCAN = [
+    "Mit folgenden Selbstbeteiligungen",
+    "Grundselbstbeteiligung 150 EUR",
+    "Nachhaftung bis 6 Monate gem. Klausel TK5290 500 EUR",
+    "Altbauten gegen Einsturz gem. Klausel TK5155 10% mind. 2.500 EUR",
+]
+
+
+def test_klausel_selbstbeteiligung_not_ambiguous_from_previous_line():
+    """Echter Scan: die frühere Umkreissuche "Wert vor Klausel" fand für
+    TK5290 zusätzlich "150 EUR" (Grundselbstbeteiligung) und für TK5155
+    "500 EUR" (TK5290) - das Feld wurde dadurch als mehrdeutig markiert."""
+    page = _page_from_lines(_SELBSTBETEILIGUNGEN_SCAN)
+    model = MockOCRModel()
+    for key, expected in [("nachhaftung_6_monate", "500 EUR"), ("altbauten_einsturz_tk5155", "10% mind. 2.500 EUR")]:
+        match = model._match_field_in_pages(_mlp_patterns(key), [page])
+        assert (match.value, match.ambiguous) == (expected, False)
+
+
+def test_empty_klausel_selbstbeteiligung_does_not_take_previous_lines_value():
+    lines = [line.replace("TK5290 500 EUR", "TK5290") for line in _SELBSTBETEILIGUNGEN_SCAN]
+    match = MockOCRModel()._match_field_in_pages(_mlp_patterns("nachhaftung_6_monate"), [_page_from_lines(lines)])
+    assert match.match_status == "data_not_found"

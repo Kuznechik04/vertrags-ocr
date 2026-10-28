@@ -50,11 +50,23 @@ TEXT = r"(?:[^\n\t.]|\.(?=[ \t]*\d)){2,120}"
 # an der Position von "nicht" scheitern, bevor sie den vollen Ausdruck
 # probiert - `re.search` sucht ohnehin den am weitesten links liegenden
 # Treffer, das ist hier nur zur Klarheit so sortiert.
-STATUS_WORD = r"\b(?:nicht\s+gewünscht|gewünscht|ja|nein|yes|no|x)\b"
+# `gew\S?nscht` statt "gewünscht": an einem echten docTR-Scan nachgewiesen,
+# dass das "ü" als "i" gelesen wird ("nicht gewinscht") oder ganz fehlt -
+# ein fixes "ü" (bzw. das per `_fold_umlauts` gefaltete "u") ließ dadurch
+# u.a. das Feld zu Klausel T512807u leer.
+STATUS_WORD = r"\b(?:nicht\s+gew\S?nscht|gew\S?nscht|ja|nein|yes|no|x)\b"
 # Selbstbeteiligungs-Angabe: entweder ein reiner Betrag ("10.000 EUR") oder
 # ein Prozentsatz mit Mindestbetrag ("10% mind. 2.500 EUR") - beide Formen
 # kommen im selben Formularabschnitt vor (siehe `_klausel_selbstbeteiligung`).
 SELBSTBETEILIGUNG = r"(?:\d{1,3}\s*%\s*mind\.?\s*)?[\d.]+(?:,\d{1,2})?\s*(?:EUR|€|Euro)"
+# Strenge Variante: Prozentsatz UND Mindestbetrag Pflicht - für
+# Selbstbeteiligungen, die laut Formular immer so angegeben werden (z.B.
+# Brand/Blitzschlag/Explosion T512805u: "10% mind. 500 EUR").
+SELBSTBETEILIGUNG_PROZENT = r"\d{1,3}\s*%\s*mind\.?\s*[\d.]+(?:,\d{1,2})?\s*(?:EUR|€|Euro)"
+# Versicherungssumme eines Leistungsbausteins ("Versicherungssumme in EUR"-
+# Spalte) - anders als `MONEY` mit Pflicht-Währung, damit keine nackte Zahl
+# (z.B. aus einem Klausel-Code) als Summe durchgeht.
+SUMME = r"[\d.]+(?:,\d{1,2})?\s*(?:EUR|€|Euro)"
 # Max. Zeichen-Distanz für den "Wert steht vor dem Klausel-Code"-Fall in
 # `_klausel_status`/`_klausel_selbstbeteiligung` (Reihenfolge-Umkehr durch
 # Zeilenumbruch, siehe dort). An einem echten Transkript gemessen: legitime
@@ -64,7 +76,6 @@ SELBSTBETEILIGUNG = r"(?:\d{1,3}\s*%\s*mind\.?\s*)?[\d.]+(?:,\d{1,2})?\s*(?:EUR|
 # Treffer" zu liefern - 80 deckt die beobachteten Fälle mit Puffer ab, ohne
 # über eine komplette andere Aufzählungszeile hinwegzureichen.
 _KLAUSEL_PROXIMITY_WINDOW = 80
-
 
 def _escape_label(label: str) -> str:
     """Wie `re.escape`, aber mit `\\s*` ZWISCHEN JEDEM Zeichen statt fixer
@@ -228,44 +239,50 @@ def _label_until(label: str, until_anchor: str, max_len: int = 3000) -> list[str
     return [rf"{_escape_label(label)}\s*:?\s*([\s\S]{{0,{max_len}}}?)(?=\s*{_escape_label(until_anchor)})"]
 
 
-def _klausel_status(klausel_code: str) -> list[str]:
-    """Ja/Nein-artiger Status ("gewünscht"/"nicht gewünscht"/"ja"/"nein") zu
-    einer Klausel im Fließtext einer Aufzählung ("Leistungsbausteine") -
-    KEIN klassisches Label:Wert-Paar. An einem echten MLP-Transkript
-    verifiziert, zwei Fälle je nach Beschreibungslänge:
+def _klausel_status(klausel_code: str, value: str = STATUS_WORD, wrap_keyword: str | None = None) -> list[str]:
+    """Wert eines Leistungsbausteins ("Mit folgenden Leistungsbausteinen") -
+    Status ("gewünscht"/"nicht gewünscht"/"Ja"/"Nein") oder, in der Spalte
+    "Versicherungssumme in EUR", eine Summe (`value`). KEIN klassisches
+    Label:Wert-Paar. An echten MLP-Transkripten verifiziert:
 
-    1. Kurze Beschreibung (passt auf eine Zeile): Status kommt NACH dem
-       Klausel-Verweis, z.B. "... (Klausel T512805u) nicht gewünscht".
-    2. Lange Beschreibung (bricht im tabellarisch aufgebauten PDF über eine
-       Zeile um): die Text-Extraktion hängt den Status ans Ende der ERSTEN
-       Zeile, der Klausel-Verweis folgt erst in der fortgesetzten
-       Beschreibung auf Zeile 2 - der Status steht hier VOR dem
-       Klausel-Verweis, mit Beschreibungs-Resttext dazwischen, z.B.
-       "... Neubauleistung Nein\\nsowie infolge ... (Klausel T590080k)".
+    1. Kurze Beschreibung (eine Zeile): Wert steht in derselben Zeile NACH
+       dem Klausel-Verweis, z.B. "... (Klausel T512805u) nicht gewünscht".
+    2. Lange Beschreibung (bricht im PDF um): die Text-Extraktion hängt den
+       Wert ans Ende der ERSTEN Zeile, der Klausel-Verweis folgt in der
+       Folgezeile, z.B. "... Neubauleistung Nein\nsowie infolge ...
+       (Klausel T590080k)". Nur aktiv mit `wrap_keyword` (ein Wort aus der
+       ersten Beschreibungszeile, hier "Neubauleistung"): der Wert muss am
+       Ende GENAU DIESER Zeile stehen. Die frühere reine Zeichen-Umkreissuche
+       griff den Wert der Vorgängerzeile auf, sobald der eigene fehlte
+       (z.B. "Grundselbstbeteiligung 150 EUR" für Klausel TK5290).
 
-    Der Klausel-Code selbst (z.B. "T590080k") ist als Anker genutzt statt
-    der Beschreibung, weil er im Dokument eindeutig ist. Die Distanz beim
-    "Status-vor-Klausel"-Fall ist bewusst auf ~1 Zeile gedeckelt, damit
-    nicht versehentlich ein Status aus einem komplett anderen
-    Leistungsbaustein aufgegriffen wird."""
-    klausel = re.escape(klausel_code)
-    return [
-        rf"{klausel}\)?\s*({STATUS_WORD})",
-        rf"({STATUS_WORD}).{{0,{_KLAUSEL_PROXIMITY_WINDOW}}}{klausel}",
-    ]
+    Anker ist "Klausel <Code>)" MIT schließender Klammer: dieselben Codes
+    stehen im Selbstbeteiligungen-Abschnitt nochmals als "gem. Klausel
+    <Code>" (ohne Klammer, siehe `_klausel_selbstbeteiligung`) - so greift
+    keiner der beiden Feldtypen den Wert des anderen ab."""
+    anchor = rf"klausel\s*{re.escape(klausel_code)}\s*\)"
+    return _klausel_patterns(anchor, value, wrap_keyword)
 
 
-def _klausel_selbstbeteiligung(klausel_code: str) -> list[str]:
-    """Wie `_klausel_status`, aber für den "Selbstbeteiligungen"-Abschnitt,
-    in dem statt eines Ja/Nein-Status ein Betrag bzw. eine Prozent-/
-    Mindestbetrags-Angabe zur Klausel steht (siehe `SELBSTBETEILIGUNG`).
-    Gleiche zwei Reihenfolge-Fälle wie dort, aus demselben Transkript
-    verifiziert."""
-    klausel = re.escape(klausel_code)
-    return [
-        rf"{klausel}\)?\s*({SELBSTBETEILIGUNG})",
-        rf"({SELBSTBETEILIGUNG}).{{0,{_KLAUSEL_PROXIMITY_WINDOW}}}{klausel}",
-    ]
+def _klausel_selbstbeteiligung(
+    klausel_code: str, value: str = SELBSTBETEILIGUNG, wrap_keyword: str | None = None
+) -> list[str]:
+    """Wie `_klausel_status`, aber für den "Selbstbeteiligungen"-Abschnitt
+    ("... gem. Klausel T590081k 10% mind. 2.500 EUR"). Anker ist der
+    Klausel-Code OHNE folgende schließende Klammer, damit der Leistungs-
+    baustein "(Klausel <Code>) 50.000 EUR" nicht als Selbstbeteiligung
+    gelesen wird."""
+    anchor = rf"klausel\s*{re.escape(klausel_code)}(?!\s*\))"
+    return _klausel_patterns(anchor, value, wrap_keyword)
+
+
+def _klausel_patterns(anchor: str, value: str, wrap_keyword: str | None) -> list[str]:
+    patterns = [rf"{anchor}\s*({value})"]
+    if wrap_keyword:
+        patterns.append(
+            rf"{_escape_label(wrap_keyword)}[^\n]*?[ \t]({value})[ \t]*\n[^\n]{{0,{_KLAUSEL_PROXIMITY_WINDOW}}}?{anchor}"
+        )
+    return patterns
 
 
 def _scoped_label(
@@ -351,9 +368,11 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("grobe_fahrlaessigkeit_20000", "Absicherung der groben Fahrlässigkeit bis 20.000 EUR?", _checkbox_robust("Absicherung der groben Fahrlässigkeit bis 20.000 EUR?", "grobe Fahrlässigkeit bis 20.000 EUR")),
     ("wetterbedingte_luftbewegungen", "Einschluss außergewöhnlicher wetterbedingter Luftbewegungen", _checkbox_robust("Einschluss außergewöhnlicher wetterbedingter Luftbewegungen")),
     ("feuerrohbau", "Feuerrohbau", _checkbox_robust("Feuerrohbau")),
-    ("altbauten_sachschaeden_t590080k", "Mitversicherung von Altbauten gegen Sachschäden ... (Klausel T590080k)", _klausel_status("T590080k")),
-    ("ausstattung_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert (Klausel T512807u)", _klausel_status("T512807u")),
-    ("altbau_brand_t512805u", "Brand, Blitzschlag, Explosion für den Altbau (Klausel T512805u)", _klausel_status("(T512805u)")),
+    ("altbauten_sachschaeden_t590080k", "Mitversicherung von Altbauten gegen Sachschäden ... (Klausel T590080k)", _klausel_status("T590080k", wrap_keyword="Neubauleistung")),
+    # Beide Bausteine stehen in der Spalte "Versicherungssumme in EUR": Wert
+    # ist eine Summe, bei Nicht-Einschluss "nicht gewünscht".
+    ("ausstattung_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert (Klausel T512807u)", _klausel_status("T512807u", rf"{SUMME}|{STATUS_WORD}", wrap_keyword="Kunstwert")),
+    ("altbau_brand_t512805u", "Einschluß Brand, Blitzschlag, Explosion für den Altbau (Klausel T512805u)", _klausel_status("T512805u", rf"{SUMME}|{STATUS_WORD}")),
     ("pfahl_brunnen_senkkasten", "Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", _robust(_label("Pfahl-, Brunnen- und Senkkastengründung, Baugrundverbesserung", SELBSTBETEILIGUNG, "Baugrundverbesserung"), "Baugrundverbesserung", SELBSTBETEILIGUNG)),
     ("baugrubenumschliessung", "Baugrubenumschließung", _robust(_label("Baugrubenumschließung", SELBSTBETEILIGUNG), "Baugrubenumschließung", SELBSTBETEILIGUNG)),
     ("wasserhaltung", "Wasserhaltung", _robust(_label("Wasserhaltung", SELBSTBETEILIGUNG), "Wasserhaltung", SELBSTBETEILIGUNG)),
@@ -366,8 +385,8 @@ MLP_FIELDS: list[tuple[str, str, list[str]]] = [
     ("nachhaftung_6_monate", "Nachhaftung bis 6 Monate gem. Klausel TK5290", _klausel_selbstbeteiligung("TK5290")),
     ("altbauten_einsturz_tk5155", "Altbauten gegen Einsturz gem. Klausel TK5155", _klausel_selbstbeteiligung("TK5155")),
     ("altbauten_sachschaeden_t590081k", "Altbauten gegen Sachschäden gem. Klausel T590081k", _klausel_selbstbeteiligung("T590081k")),
-    ("altbauten_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert gem. Klausel T512807u", _klausel_selbstbeteiligung("T512807u")),
-    ("altbauten_brand_t512805u", "Brand, Blitzschlag, Explosionsschäden für den Altbau gem. Klausel T512805u", _klausel_selbstbeteiligung("T512805u")),
+    ("altbauten_kunstwert_t512807u", "Aufwendige Ausstattung / Kunstwert gem. Klausel T512807u", _klausel_selbstbeteiligung("T512807u", wrap_keyword="Kunstwert")),
+    ("altbauten_brand_t512805u", "Brand, Blitzschlag, Explosionsschäden für den Altbau gem. Klausel T512805u", _klausel_selbstbeteiligung("T512805u", SELBSTBETEILIGUNG_PROZENT)),
     ("art_bauvorhaben", "Art des Bauvorhabens", _label("Art des Bauvorhabens", TEXT, "Bauvorhaben")),
     # _label_until zuerst (mehrzeilig bis zum nächsten Feld "Liegt das
     # Bauvorhaben in einem Bergbaugebiet?" - an einem echten Dokument war
@@ -486,3 +505,19 @@ def apply_field_dependencies(
         prediction.bbox = None
         prediction.ambiguous = False
         prediction.match_status = "not_required"
+
+
+# Gleiche OCR-Toleranz wie in `STATUS_WORD` ("gewinscht", "gewnscht").
+_GEWUENSCHT_STATUS = re.compile(r"(nicht\s+)?gew\S?nscht", re.IGNORECASE)
+
+
+def normalize_status_values(predictions: list[FieldPrediction]) -> None:
+    """Vereinheitlicht OCR-Varianten von "gewünscht"/"nicht gewünscht" (z.B.
+    docTR: "nicht gewinscht") auf die korrekte Schreibweise, damit Review und
+    Export nicht den Lesefehler übernehmen. Nur Werte, die AUSSCHLIESSLICH
+    aus dem Status bestehen - Freitext bleibt unangetastet. Ändert
+    `predictions` in-place."""
+    for prediction in predictions:
+        match = _GEWUENSCHT_STATUS.fullmatch((prediction.value or "").strip())
+        if match:
+            prediction.value = "nicht gewünscht" if match.group(1) else "gewünscht"
