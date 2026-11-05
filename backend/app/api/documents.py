@@ -1,12 +1,14 @@
+import logging
+import threading
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.db import get_db
+from app.core.db import SessionLocal, get_db
 from app.core.deps import get_current_admin, get_current_user, get_current_user_flexible
 from app.models.document import ContractField, Document, DocumentStatus
 from app.models.template import ContractTemplate
@@ -23,6 +25,12 @@ from app.services.xlsx_export import build_multi_document_xlsx, build_single_doc
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+logger = logging.getLogger(__name__)
+
+# Ein Dokument nach dem anderen verarbeiten: parallele OCR-Läufe würden sich
+# nur gegenseitig CPU/GPU wegnehmen (und das Donut-Modell ist nicht für
+# gleichzeitige Inferenz aus mehreren Threads ausgelegt).
+_processing_lock = threading.Lock()
 
 
 def _get_owned_document(document_id: str, user: User, db: Session) -> Document:
@@ -38,6 +46,7 @@ def _get_owned_document(document_id: str, user: User, db: Session) -> Document:
 
 @router.post("/upload", response_model=DocumentDetailOut)
 def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     template_id: str = Form(...),
     user: User = Depends(get_current_user),
@@ -79,29 +88,73 @@ def upload_document(
     db.commit()
     db.refresh(document)
 
-    try:
-        _run_ocr(document, db)
-    except Exception as exc:  # noqa: BLE001
-        document.status = DocumentStatus.FAILED
-        document.error_message = str(exc)
-        db.commit()
-        raise HTTPException(500, f"OCR-Verarbeitung fehlgeschlagen: {exc}") from exc
-
-    db.refresh(document)
+    # Die Erkennung läuft nach der Antwort im Hintergrund - der Upload kommt
+    # sofort mit Status "processing" zurück, das Frontend fragt den Status ab.
+    background_tasks.add_task(process_document, document.id)
     return document
 
 
+def process_document(document_id: str) -> None:
+    """Hintergrund-Verarbeitung eines hochgeladenen Dokuments mit eigener
+    DB-Session (die Request-Session ist zu diesem Zeitpunkt schon zu).
+
+    Ablauf: Felder erkennen -> Status "needs_review" (Dokument ist ab jetzt
+    im Frontend prüfbar) -> OCR-Volltext für den Download schreiben. Schlägt
+    die Feld-Erkennung fehl, wird das Dokument als "failed" markiert und die
+    Fehlermeldung gespeichert, damit das Frontend sie anzeigen kann.
+
+    Läuft in einem Thread des FastAPI-Threadpools; mehrere Uploads warten
+    am `_processing_lock` und werden nacheinander abgearbeitet."""
+    with _processing_lock:
+        db = SessionLocal()
+        try:
+            document = db.get(Document, document_id)
+            if document is None:  # zwischenzeitlich gelöscht
+                return
+            try:
+                _run_ocr(document, db)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("OCR-Verarbeitung für Dokument %s fehlgeschlagen", document_id)
+                # Halb angelegte Felder verwerfen und das Dokument frisch
+                # laden - nach einem Rollback sind die alten Objekte ungültig.
+                db.rollback()
+                document = db.get(Document, document_id)
+                if document is None:
+                    return
+                document.status = DocumentStatus.FAILED
+                document.error_message = f"OCR-Verarbeitung fehlgeschlagen: {exc}"
+                db.commit()
+                return
+            _write_ocr_text(document.file_path)
+        finally:
+            db.close()
+
+
+def _write_ocr_text(file_path: str) -> None:
+    """Schreibt den OCR-Volltext erst NACH der Feld-Erkennung: beim MLP-
+    Antrag werden für die Felder nur die ersten Seiten gebraucht, das
+    Dokument ist damit schon prüfbar, während die restlichen Seiten für den
+    Volltext noch erkannt werden (bereits erkannte Seiten kommen aus dem
+    Cache, siehe MockOCRModel._extract_pages)."""
+    if not Path(file_path).is_file():  # zwischenzeitlich gelöscht
+        return
+    try:
+        ocr_text = get_ocr_model().extract_text(file_path)
+        Path(file_path).with_suffix(".txt").write_text(ocr_text, encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        logger.exception("OCR-Volltext für %s konnte nicht erstellt werden", file_path)
+
+
 def _run_ocr(document: Document, db: Session) -> None:
+    """Erkennt die Felder des Dokument-Templates, speichert sie als
+    `ContractField`-Zeilen und setzt den Status auf "needs_review"."""
     model = get_ocr_model()
     document.page_count = model.page_count(document.file_path)
     fields = [
         FieldSpec(field_key=f.field_key, field_label=f.field_label, patterns=f.patterns)
         for f in document.template.fields
     ]
-    predictions, ocr_text = model.predict_with_text(
-        document.file_path, fields, template_key=document.template.key
-    )
-    Path(document.file_path).with_suffix(".txt").write_text(ocr_text, encoding="utf-8")
+    predictions = model.predict(document.file_path, fields, template_key=document.template.key)
     if document.template.key == "mlp_bauantrag":
         normalize_status_values(predictions)
         apply_field_dependencies(predictions, MLP_FIELD_DEPENDENCIES)
@@ -246,7 +299,12 @@ def get_document_ocr_text(
     document = _get_owned_document(document_id, user, db)
     text_path = Path(document.file_path).with_suffix(".txt")
     if not text_path.is_file():
-        raise HTTPException(404, "OCR-Text für dieses Dokument nicht gefunden")
+        # Der Volltext wird erst nach der Feld-Erkennung geschrieben (siehe
+        # `_write_ocr_text`) - direkt nach der Freigabe zur Prüfung kann er
+        # bei langen Dokumenten noch fehlen.
+        raise HTTPException(
+            404, "OCR-Text ist noch nicht verfügbar (wird ggf. noch erstellt) – bitte gleich erneut versuchen"
+        )
     filename = Path(document.filename).stem or "vertrag"
     return FileResponse(
         text_path,
@@ -301,6 +359,11 @@ def finalize_document(document_id: str, user: User = Depends(get_current_user), 
     from datetime import datetime
 
     document = _get_owned_document(document_id, user, db)
+    # Solange die Erkennung läuft (oder fehlgeschlagen ist) hat das Dokument
+    # keine Felder - ohne diese Prüfung wäre "alle Felder validiert" leer
+    # erfüllt und ein unbearbeitetes Dokument ließe sich abschließen.
+    if document.status not in (DocumentStatus.NEEDS_REVIEW, DocumentStatus.REVIEWED):
+        raise HTTPException(400, "Dokument ist noch nicht (erfolgreich) verarbeitet")
 
     unvalidated = [f for f in document.fields if not f.is_validated]
     if unvalidated:

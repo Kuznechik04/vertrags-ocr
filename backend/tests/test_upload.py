@@ -46,7 +46,13 @@ def test_upload_accepts_real_pdf(client):
 
     assert response.status_code == 200
     assert response.json()["content_type"] == "application/pdf"
+    # Die Erkennung läuft als Hintergrund-Task nach der Antwort ...
+    assert response.json()["status"] == "processing"
     document_id = response.json()["id"]
+    # ... die der TestClient vor dem Zurückkehren bereits ausgeführt hat.
+    detail = client.get(f"/api/documents/{document_id}", headers=headers).json()
+    assert detail["status"] == "needs_review"
+    assert detail["fields"]
     ocr_text_path = settings.upload_dir / f"{document_id}.txt"
     assert ocr_text_path.is_file()
     assert ocr_text_path.read_text(encoding="utf-8").strip()

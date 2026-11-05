@@ -51,8 +51,11 @@ keine tatsächliche Lesesicherheit).
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import pdfplumber
@@ -95,17 +98,80 @@ def _get_easyocr_reader():
 
 
 _doctr_predictor = None
+_doctr_load_lock = threading.Lock()
 
 
 def _get_doctr_predictor():
     """Lädt den docTR-Predictor (inkl. Modellgewichten) genau einmal pro
-    Prozess – wie bei EasyOCR ist die Initialisierung teuer."""
+    Prozess – wie bei EasyOCR ist die Initialisierung teuer. Der Lock
+    verhindert doppeltes Laden, wenn der Preload beim Serverstart und der
+    erste Upload gleichzeitig hier ankommen. Läuft auf GPU (CUDA/MPS),
+    falls vorhanden - auf Apple Silicon gemessen ~8x schneller als CPU."""
     global _doctr_predictor
-    if _doctr_predictor is None:
-        from doctr.models import ocr_predictor
+    with _doctr_load_lock:
+        if _doctr_predictor is None:
+            from doctr.models import ocr_predictor
 
-        _doctr_predictor = ocr_predictor(pretrained=True)
+            from app.ocr.device import torch_device
+
+            _doctr_predictor = ocr_predictor(pretrained=True).to(torch_device())
     return _doctr_predictor
+
+
+def preload_ocr_engine() -> None:
+    """Lädt die konfigurierte OCR-Engine vorab (siehe `settings.ocr_preload`,
+    aufgerufen aus einem Hintergrund-Thread beim Serverstart in main.py).
+    Tesseract braucht keinen Preload: es ist ein externes Programm, das pro
+    Aufruf gestartet wird und keine Gewichte im Python-Prozess hält."""
+    engine = (settings.mock_ocr_engine or "doctr").lower()
+    try:
+        if engine == "doctr":
+            _get_doctr_predictor()
+        elif engine == "easyocr":
+            _get_easyocr_reader()
+    except ImportError:
+        pass  # Fehlende Engine wird beim ersten echten OCR-Lauf geloggt.
+
+
+# Cache der extrahierten Seiten, Schlüssel = SHA-256 des Dateiinhalts. Der
+# Upload-Dialog extrahiert dieselbe Datei erst für den Vertragstyp-Vorschlag
+# (POST /api/templates/suggest) und direkt danach für den eigentlichen Upload
+# - ohne Cache lief die teure OCR dafür zweimal. Bewusst klein und nur im
+# Arbeitsspeicher (verschwindet mit dem Prozess).
+_PAGE_CACHE_SIZE = 16
+_page_cache: OrderedDict[tuple, "_CachedPages"] = OrderedDict()
+# Serialisiert die eigentliche Extraktion: parallele OCR-Läufe würden sich
+# nur gegenseitig CPU/GPU wegnehmen, und eine zweite Anfrage für dieselbe
+# Datei findet nach dem Warten das Ergebnis bereits im Cache.
+_extraction_lock = threading.Lock()
+
+
+@dataclass
+class _CachedPages:
+    """Cache-Eintrag eines Dokuments. `pages` enthält immer einen lückenlosen
+    Anfang des Dokuments (Seite 1..n) - bei `complete=False` können danach
+    noch weitere Seiten folgen, die bisher nicht gebraucht wurden."""
+
+    pages: list["PageData"]
+    complete: bool  # True = alle Seiten des Dokuments extrahiert
+
+
+def _file_digest(file_path: str) -> str:
+    """Hash über den Dateiinhalt statt über den Pfad: der Vorschlag arbeitet
+    auf einer temporären Datei, der Upload auf der endgültig gespeicherten -
+    beide haben unterschiedliche Pfade, aber denselben Inhalt. Liest in
+    1-MB-Blöcken, damit große PDFs nicht komplett im Speicher landen."""
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def clear_page_cache() -> None:
+    """Leert den Seiten-Cache (vor allem für Tests, damit sie sich nicht
+    gegenseitig Ergebnisse unterschieben)."""
+    _page_cache.clear()
 
 
 def _preprocess_image_for_ocr(image):
@@ -373,15 +439,6 @@ class MockOCRModel(BaseOCRModel):
         pages = self._extract_pages(file_path, max_pages=max_pages)
         return self._predict_from_pages(fields, pages)
 
-    def predict_with_text(
-        self, file_path: str, fields: list[FieldSpec], template_key: str | None = None
-    ) -> tuple[list[FieldPrediction], str]:
-        pages = self._extract_pages(file_path)
-        prediction_pages = pages
-        if template_key == "mlp_bauantrag":
-            prediction_pages = pages[:RELEVANT_PAGE_COUNT]
-        return self._predict_from_pages(fields, prediction_pages), self._pages_to_text(pages)
-
     def extract_text(self, file_path: str) -> str:
         return self._pages_to_text(self._extract_pages(file_path))
 
@@ -449,12 +506,66 @@ class MockOCRModel(BaseOCRModel):
     # ------------------------------------------------------------------
 
     def _extract_pages(self, file_path: str, max_pages: int | None = None) -> list[PageData]:
+        """Extrahiert die ersten `max_pages` Seiten (bzw. alle) über den
+        Cache: bereits extrahierte Seiten derselben Datei werden
+        wiederverwendet, fehlende Folgeseiten nur noch ergänzt (z.B. erst
+        die relevanten Seiten eines MLP-Antrags für die Felder, danach der
+        Rest für den OCR-Volltext)."""
+        # Die Einstellungen gehören mit in den Schlüssel: wird zur Laufzeit
+        # z.B. die OCR-Engine gewechselt, darf kein Ergebnis der alten Engine
+        # wiederverwendet werden.
+        key = (_file_digest(file_path), settings.mock_ocr_always, settings.mock_ocr_engine)
+        with _extraction_lock:
+            cached = _page_cache.get(key)
+            if cached is not None:
+                # LRU: zuletzt benutzte Einträge wandern ans Ende und werden
+                # zuletzt verdrängt.
+                _page_cache.move_to_end(key)
+                # Treffer, wenn der Cache das ganze Dokument kennt oder
+                # zumindest so viele Seiten wie angefragt. `[:None]` liefert
+                # bei `max_pages=None` die vollständige Liste.
+                if cached.complete or (max_pages is not None and len(cached.pages) >= max_pages):
+                    return cached.pages[:max_pages]
+
+            # Kein oder nur teilweiser Treffer: nur die noch fehlenden Seiten
+            # extrahieren, ab der ersten noch unbekannten Seite.
+            known = cached.pages if cached is not None else []
+            new_pages = self._extract_pages_uncached(
+                file_path,
+                first_page=len(known),
+                max_pages=None if max_pages is None else max_pages - len(known),
+            )
+            pages = known + new_pages
+            # Vollständig ist das Dokument, wenn alle Seiten angefragt wurden
+            # oder weniger Seiten zurückkamen als angefragt (= Dokumentende
+            # erreicht). Kamen genau so viele wie angefragt, ist offen, ob noch
+            # Seiten folgen - eine spätere Volltext-Anfrage prüft das dann
+            # (und bekommt im Zweifel nur eine leere Ergänzung).
+            complete = max_pages is None or len(new_pages) < max_pages - len(known)
+            _page_cache[key] = _CachedPages(pages=pages, complete=complete)
+            _page_cache.move_to_end(key)
+            # Ältesten (am längsten unbenutzten) Eintrag verdrängen, damit
+            # der Cache nicht unbegrenzt Speicher belegt.
+            while len(_page_cache) > _PAGE_CACHE_SIZE:
+                _page_cache.popitem(last=False)
+            return pages
+
+    def _extract_pages_uncached(
+        self, file_path: str, first_page: int = 0, max_pages: int | None = None
+    ) -> list[PageData]:
+        """Eigentliche Extraktion ohne Cache: höchstens `max_pages` Seiten ab
+        Seite `first_page` (0-basiert). Wählt je nach `mock_ocr_always`
+        zwischen OCR und eingebetteter PDF-Textebene."""
         is_pdf = file_path.lower().endswith(".pdf")
 
         if settings.mock_ocr_always:
-            return self._extract_pages_via_ocr(file_path, is_pdf, max_pages=max_pages)
+            return self._extract_pages_via_ocr(file_path, is_pdf, first_page=first_page, max_pages=max_pages)
 
-        pdf_pages = self._extract_pages_via_pdfplumber(file_path, max_pages=max_pages) if is_pdf else []
+        pdf_pages = (
+            self._extract_pages_via_pdfplumber(file_path, first_page=first_page, max_pages=max_pages)
+            if is_pdf
+            else []
+        )
         total_chars = sum(len(w.text) for page in pdf_pages for line in page.lines for w in line)
 
         if total_chars >= MIN_TRUSTED_TEXT_LENGTH:
@@ -462,17 +573,23 @@ class MockOCRModel(BaseOCRModel):
 
         # Kein/kaum PDF-Text gefunden -> vermutlich ein Scan. OCR liefert
         # Wortpositionen, die ebenfalls auf 0..1 normiert werden.
-        ocr_pages = self._extract_pages_via_ocr(file_path, is_pdf, max_pages=max_pages)
+        ocr_pages = self._extract_pages_via_ocr(file_path, is_pdf, first_page=first_page, max_pages=max_pages)
         if any(page.lines for page in ocr_pages):
             return ocr_pages
         return pdf_pages
 
+    @staticmethod
+    def _page_slice(first_page: int, max_pages: int | None) -> slice:
+        """Seitenbereich `first_page` bis `first_page + max_pages` (exklusiv)
+        als slice; `max_pages=None` bedeutet "bis zum Dokumentende"."""
+        return slice(first_page, None if max_pages is None else first_page + max_pages)
+
     def _extract_pages_via_pdfplumber(
-        self, file_path: str, max_pages: int | None = None
+        self, file_path: str, first_page: int = 0, max_pages: int | None = None
     ) -> list[PageData]:
         pages: list[PageData] = []
         with pdfplumber.open(file_path) as pdf:
-            source_pages = pdf.pages if max_pages is None else pdf.pages[:max_pages]
+            source_pages = pdf.pages[self._page_slice(first_page, max_pages)]
             for page in source_pages:
                 width, height = page.width, page.height
                 if not width or not height:
@@ -516,12 +633,17 @@ class MockOCRModel(BaseOCRModel):
         return lines
 
     def _extract_pages_via_ocr(
-        self, file_path: str, is_pdf: bool, max_pages: int | None = None
+        self, file_path: str, is_pdf: bool, first_page: int = 0, max_pages: int | None = None
     ) -> list[PageData]:
         try:
-            images = self._load_images(file_path, is_pdf, max_pages=max_pages)
+            images = self._load_images(file_path, is_pdf, first_page=first_page, max_pages=max_pages)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Konnte Dokument nicht als Bild laden für OCR (%s): %s", file_path, exc)
+            return []
+        # Keine Seiten im angefragten Bereich (z.B. Folgeseiten eines
+        # einseitigen Dokuments) - die OCR-Engines nicht mit einer leeren
+        # Liste aufrufen, docTR quittiert das mit einem Fehler.
+        if not images:
             return []
 
         engine = (settings.mock_ocr_engine or "doctr").lower()
@@ -569,7 +691,7 @@ class MockOCRModel(BaseOCRModel):
         return merged_rows
 
     def _load_images(
-        self, file_path: str, is_pdf: bool, max_pages: int | None = None
+        self, file_path: str, is_pdf: bool, first_page: int = 0, max_pages: int | None = None
     ) -> list:
         from PIL import Image
 
@@ -586,13 +708,14 @@ class MockOCRModel(BaseOCRModel):
             zoom = dpi / 72  # PyMuPDFs Basisauflösung ist 72 DPI
             matrix = fitz.Matrix(zoom, zoom)
             with fitz.open(file_path) as doc:
-                pages = list(doc) if max_pages is None else list(doc)[:max_pages]
+                pages = list(doc)[self._page_slice(first_page, max_pages)]
                 images = [
                     Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                     for pix in (page.get_pixmap(matrix=matrix) for page in pages)
                 ]
         else:
-            images = [Image.open(file_path).convert("RGB")]
+            # Ein Bild-Upload hat genau eine Seite - ab Seite 2 gibt es nichts.
+            images = [Image.open(file_path).convert("RGB")] if first_page == 0 else []
         return [_preprocess_image_for_ocr(image) for image in images]
 
     def _ocr_pages_with_easyocr(self, images: list) -> list[PageData]:

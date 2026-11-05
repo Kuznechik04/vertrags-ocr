@@ -7,6 +7,9 @@ import { navigate } from "../lib/router.js";
 import type { RouteContext, Teardown } from "../lib/router.js";
 import type { DocumentDetail } from "../types/document.js";
 
+/** Abfrageintervall, solange das Dokument im Hintergrund verarbeitet wird. */
+const PROCESSING_POLL_MS = 2000;
+
 export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteContext): Teardown {
   const id = ctx.params.id;
 
@@ -18,6 +21,11 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
   let ocrTextError: string | null = null;
   let exporting = false;
   let preview: ReturnType<typeof createDocumentPreview> | null = null;
+  // Timer für die nächste Statusabfrage, solange das Dokument verarbeitet wird.
+  let pollTimer: number | undefined;
+  // Wird beim Verlassen der Seite gesetzt: eine noch laufende Anfrage darf
+  // danach nichts mehr anzeigen oder neu planen.
+  let destroyed = false;
 
   const fieldList = createFieldList({
     onSelect: (fid) => {
@@ -62,6 +70,21 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
 
   async function load(): Promise<void> {
     doc = await api.getDocument(id);
+    if (destroyed) return;
+    // Erkennung läuft noch im Hintergrund: Hinweis anzeigen und in
+    // PROCESSING_POLL_MS erneut laden, bis die Felder da sind. Die Vorschau
+    // wird erst danach aufgebaut, weil sie u.a. die Seitenzahl braucht, die
+    // erst bei der Verarbeitung ermittelt wird.
+    if (doc.status === "processing" || doc.status === "uploaded") {
+      loadingEl.textContent = `„${doc.filename}“ wird verarbeitet …`;
+      pollTimer = window.setTimeout(() => void load(), PROCESSING_POLL_MS);
+      return;
+    }
+    // Fehlgeschlagen: Grund anzeigen statt einer leeren Prüfansicht.
+    if (doc.status === "failed") {
+      loadingEl.textContent = doc.error_message ?? "Verarbeitung fehlgeschlagen.";
+      return;
+    }
     const fileUrl = await api.fileUrl(id);
     preview = createDocumentPreview(doc, fileUrl, handleDrawComplete);
     const fieldListPanel = h("div", { class: "field-list-panel" }, fieldList.el);
@@ -165,6 +188,8 @@ export function renderDocumentReviewPage(container: HTMLElement, ctx: RouteConte
   load();
 
   return () => {
+    destroyed = true;
+    window.clearTimeout(pollTimer);
     preview?.destroy();
   };
 }

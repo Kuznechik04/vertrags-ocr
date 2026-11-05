@@ -3,9 +3,13 @@ import { getState } from "../auth/authStore.js";
 import { renderStatusBadge } from "../components/statusBadge.js";
 import { h, mount } from "../lib/dom.js";
 import { navigate } from "../lib/router.js";
+import type { Teardown } from "../lib/router.js";
 import type { ContractTemplate, DocumentSummary } from "../types/document.js";
 
-export function renderDocumentListPage(container: HTMLElement): void {
+/** Abfrageintervall, solange Dokumente im Hintergrund verarbeitet werden. */
+const PROCESSING_POLL_MS = 2000;
+
+export function renderDocumentListPage(container: HTMLElement): Teardown {
   const isAdmin = getState().user?.role === "admin";
 
   let documents: DocumentSummary[] = [];
@@ -17,13 +21,29 @@ export function renderDocumentListPage(container: HTMLElement): void {
   let pendingFiles: File[] | null = null;
   let suggesting = false;
   let suggestionHint: string | null = null;
+  // Timer für die nächste Statusabfrage, solange Dokumente verarbeitet werden.
+  let pollTimer: number | undefined;
+  // Wird beim Verlassen der Seite gesetzt: eine noch laufende Anfrage darf
+  // danach weder neu rendern noch einen neuen Timer starten.
+  let destroyed = false;
 
   const page = h("div", { class: "page" });
   container.appendChild(page);
 
   async function loadDocuments(): Promise<void> {
+    // Einen evtl. schon geplanten Abruf abbrechen, damit nach einem Upload
+    // nicht zwei Abfrage-Schleifen parallel laufen.
+    window.clearTimeout(pollTimer);
     documents = await api.listDocuments();
+    if (destroyed) return;
     rerender();
+    // Die Erkennung läuft nach dem Upload im Hintergrund - solange noch ein
+    // Dokument verarbeitet wird, den Status regelmäßig neu abfragen.
+    if (documents.some((d) => d.status === "processing" || d.status === "uploaded")) {
+      // Fehler beim Abfragen (z.B. kurz kein Netz) ignorieren - der Nutzer
+      // kann die Seite neu laden; die Liste selbst bleibt sichtbar.
+      pollTimer = window.setTimeout(() => void loadDocuments().catch(() => undefined), PROCESSING_POLL_MS);
+    }
   }
 
   async function loadTemplates(): Promise<void> {
@@ -219,7 +239,12 @@ export function renderDocumentListPage(container: HTMLElement): void {
               { onclick: () => navigate(`/documents/${doc.id}`) },
               h("td", {}, doc.filename),
               isAdmin ? h("td", {}, doc.owner_email ?? doc.owner_id) : null,
-              h("td", {}, renderStatusBadge(doc.status)),
+              // Bei fehlgeschlagener Verarbeitung zeigt der Tooltip den Grund.
+              h(
+                "td",
+                { title: doc.status === "failed" ? doc.error_message ?? "" : "" },
+                renderStatusBadge(doc.status)
+              ),
               h("td", {}, new Date(doc.uploaded_at).toLocaleString("de-DE")),
               h(
                 "td",
@@ -241,4 +266,10 @@ export function renderDocumentListPage(container: HTMLElement): void {
   rerender();
   loadDocuments();
   loadTemplates();
+
+  // Teardown: wird vom Router beim Verlassen der Seite aufgerufen.
+  return () => {
+    destroyed = true;
+    window.clearTimeout(pollTimer);
+  };
 }

@@ -59,15 +59,15 @@ def test_extract_pages_uses_ocr_when_always_enabled(monkeypatch):
     monkeypatch.setattr(
         model,
         "_extract_pages_via_ocr",
-        lambda file_path, is_pdf, max_pages=None: ocr_pages,
+        lambda file_path, is_pdf, first_page=0, max_pages=None: ocr_pages,
     )
     monkeypatch.setattr(
         model,
         "_extract_pages_via_pdfplumber",
-        lambda file_path, max_pages=None: pytest.fail("PDF text layer should be skipped"),
+        lambda file_path, first_page=0, max_pages=None: pytest.fail("PDF text layer should be skipped"),
     )
 
-    assert model._extract_pages("document.pdf") == ocr_pages
+    assert model._extract_pages_uncached("document.pdf") == ocr_pages
 
 
 def test_extract_pages_uses_pdf_text_when_always_disabled(monkeypatch):
@@ -79,7 +79,7 @@ def test_extract_pages_uses_pdf_text_when_always_disabled(monkeypatch):
     monkeypatch.setattr(
         model,
         "_extract_pages_via_pdfplumber",
-        lambda file_path, max_pages=None: pdf_pages,
+        lambda file_path, first_page=0, max_pages=None: pdf_pages,
     )
     monkeypatch.setattr(
         model,
@@ -87,7 +87,7 @@ def test_extract_pages_uses_pdf_text_when_always_disabled(monkeypatch):
         lambda *args, **kwargs: pytest.fail("OCR should not run for trusted PDF text"),
     )
 
-    assert model._extract_pages("document.pdf") == pdf_pages
+    assert model._extract_pages_uncached("document.pdf") == pdf_pages
 
 
 def test_ocr_merges_table_cells_on_same_row_but_keeps_next_row_separate():

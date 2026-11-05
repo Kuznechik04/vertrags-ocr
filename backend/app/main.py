@@ -1,4 +1,5 @@
 import hmac
+import threading
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,8 +12,11 @@ from app.api.templates import router as templates_router
 from app.core.config import settings
 from app.core.db import Base, SessionLocal, engine
 from app.models import document, template, user  # noqa: F401  (Modelle registrieren, damit create_all sie kennt)
+from app.models.document import Document, DocumentStatus
 from app.models.template import ContractTemplate, TemplateField
 from app.ocr.mlp_template import MLP_FIELDS
+from app.ocr.mock_model import preload_ocr_engine
+from app.ocr.registry import get_ocr_model
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
@@ -168,10 +172,42 @@ def _seed_templates() -> None:
         db.close()
 
 
+def _fail_interrupted_processing() -> None:
+    """Die OCR läuft als Hintergrund-Task im Serverprozess - wurde der
+    Server währenddessen beendet, bliebe ein Dokument sonst für immer auf
+    "processing" stehen. (Annahme: ein einzelner Serverprozess.)"""
+    db = SessionLocal()
+    try:
+        db.query(Document).filter(Document.status == DocumentStatus.PROCESSING).update(
+            {
+                Document.status: DocumentStatus.FAILED,
+                Document.error_message: "Verarbeitung durch Server-Neustart abgebrochen – bitte erneut hochladen",
+            }
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _preload_ocr() -> None:
+    """Lädt das OCR-Modell vorab, damit der erste Upload nicht die Ladezeit
+    abbekommt."""
+    # Donut lädt seine Gewichte beim Instanziieren; der OCR-Volltext läuft
+    # bei beiden Backends über die Mock-OCR-Engine.
+    get_ocr_model()
+    preload_ocr_engine()
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     _seed_templates()
+    _fail_interrupted_processing()
+    if settings.ocr_preload:
+        # Eigener Thread, damit der Server sofort Anfragen annimmt statt
+        # mehrere Sekunden auf das Modell zu warten. `daemon=True`: der
+        # Thread hält das Beenden des Servers nicht auf.
+        threading.Thread(target=_preload_ocr, name="ocr-preload", daemon=True).start()
 
 
 @app.get("/health")

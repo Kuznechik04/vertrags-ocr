@@ -17,6 +17,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{_TEST_DIR / 'test.db'}")
 os.environ.setdefault("UPLOAD_DIR", str(_TEST_DIR / "uploads"))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("OCR_BACKEND", "mock")
+os.environ.setdefault("OCR_PRELOAD", "false")
 
 from app.core.db import Base, engine  # noqa: E402
 from app.core.rate_limit import reset_all as reset_rate_limits  # noqa: E402

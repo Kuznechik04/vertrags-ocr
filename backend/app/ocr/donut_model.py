@@ -26,7 +26,11 @@ class DonutOCRModel(BaseOCRModel):
         from transformers import DonutProcessor, VisionEncoderDecoderModel
 
         self.torch = torch
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        from app.ocr.device import torch_device
+
+        # CUDA, Apple MPS oder CPU - je nachdem, was auf dem Rechner verfügbar
+        # bzw. per OCR_DEVICE eingestellt ist (siehe app/ocr/device.py).
+        self.device = torch_device()
         self.processor = DonutProcessor.from_pretrained(model_path)
         self.model = VisionEncoderDecoderModel.from_pretrained(model_path).to(self.device)
         self.model.eval()

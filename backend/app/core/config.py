@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     # "tesseract" -> braucht lokal installiertes tesseract-Kommandozeilen-
     #                programm (siehe README).
     mock_ocr_engine: str = "doctr"
+    # Rechengerät für die torch-basierten Modelle (docTR, Donut):
+    # "auto" -> CUDA (NVIDIA), sonst MPS (Apple Silicon), sonst CPU.
+    # Explizit "cuda", "mps" oder "cpu" erzwingt ein Gerät.
+    ocr_device: str = "auto"
+    # OCR-Modell beim Serverstart im Hintergrund laden, damit nicht der
+    # erste Upload die Ladezeit (mehrere Sekunden) abbekommt.
+    ocr_preload: bool = True
 
     # CORS
     frontend_origin: str = "http://localhost:5173"
